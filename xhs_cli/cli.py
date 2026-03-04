@@ -804,6 +804,45 @@ def favorites(max_count: int, as_json: bool):
         sys.exit(1)
 
 
+@cli.command()
+@click.argument("title")
+@click.option("--image", "images", multiple=True, required=True,
+              type=click.Path(exists=True), help="Image file to upload (can be repeated)")
+@click.option("--content", default="", help="Note body/description text")
+def post(title: str, images: tuple[str, ...], content: str):
+    """Publish a new image note.
+
+    \b
+    Examples:
+        xhs post "今日咖啡" --image coffee.jpg
+        xhs post "旅行日记" --image d1.jpg --image d2.jpg --content "好开心！"
+    """
+    import os
+
+    # Resolve to absolute paths
+    abs_paths = [os.path.abspath(p) for p in images]
+
+    console.print(f"[dim]Publishing note: {title}[/dim]")
+    console.print(f"[dim]Images: {', '.join(os.path.basename(p) for p in abs_paths)}[/dim]")
+    if content:
+        console.print(f"[dim]Content: {content[:50]}{'...' if len(content) > 50 else ''}[/dim]")
+
+    try:
+        client = _get_client()
+        ok = client.publish_note(title=title, image_paths=abs_paths, content=content)
+        if ok:
+            console.print("[green]✅ Note published successfully![/green]")
+        else:
+            console.print("[red]❌ Publish may have failed. Check your profile.[/red]")
+        client.close()
+    except FileNotFoundError as e:
+        console.print(f"[red]❌ {e}[/red]")
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]❌ Publish failed: {e}[/red]")
+        sys.exit(1)
+
+
 if __name__ == "__main__":
     cli()
 

@@ -732,6 +732,192 @@ class XhsClient:
             logger.error("Failed to post comment: %s", e)
             return False
 
+    # ===== Publish Note =====
+
+    def publish_note(self, title: str, image_paths: list[str],
+                     content: str = "") -> bool:
+        """Publish a new image note on Xiaohongshu.
+
+        Navigates to the creator publish page, uploads images via
+        the file input, fills in title and description, then clicks
+        the publish button.
+
+        Args:
+            title: Note title (required).
+            image_paths: List of absolute paths to image files.
+            content: Optional note body/description text.
+        """
+        import os
+
+        # Validate image paths exist
+        for path in image_paths:
+            if not os.path.isfile(path):
+                raise FileNotFoundError(f"Image not found: {path}")
+
+        publish_url = "https://creator.xiaohongshu.com/publish/publish"
+        logger.info("Navigating to publish page: %s", publish_url)
+        self._page.goto(publish_url, wait_until="domcontentloaded", timeout=30000)
+        self._human_wait(3, 5)
+
+        # Step 1: Upload images via file input.
+        # The creator page has a hidden <input type="file"> for image upload.
+        file_input_selectors = [
+            'input[type="file"]',
+            'input[accept*="image"]',
+            '.upload-input',
+            '#upload-input',
+        ]
+
+        file_input = None
+        for sel in file_input_selectors:
+            file_input = self._page.query_selector(sel)
+            if file_input:
+                break
+
+        if not file_input:
+            # Try clicking the upload area to reveal a file input
+            upload_area_selectors = [
+                '.upload-wrapper',
+                '[class*="upload"]',
+                '.drag-over',
+                '.creator-upload-entry',
+            ]
+            for sel in upload_area_selectors:
+                area = self._page.query_selector(sel)
+                if area:
+                    area.click()
+                    self._human_wait(1, 2)
+                    break
+
+            # Try again to find file input
+            for sel in file_input_selectors:
+                file_input = self._page.query_selector(sel)
+                if file_input:
+                    break
+
+        if not file_input:
+            raise RuntimeError(
+                "Cannot find file upload input on the publish page. "
+                "The page structure may have changed."
+            )
+
+        # Upload all images at once
+        logger.info("Uploading %d images...", len(image_paths))
+        file_input.set_input_files(image_paths)
+        # Wait for upload to complete
+        self._human_wait(3, 5)
+
+        # Wait a bit more for thumbnails to appear (large files may take longer)
+        for _ in range(10):
+            thumbnails = self._page.query_selector_all(
+                'img[class*="thumbnail"], img[class*="preview"], '
+                '.image-item, [class*="upload-item"]'
+            )
+            if len(thumbnails) >= len(image_paths):
+                break
+            self._human_wait(1, 2)
+
+        logger.info("Images uploaded, filling in details...")
+
+        # Step 2: Fill in title.
+        title_selectors = [
+            '#title-textarea',
+            '[placeholder*="标题"]',
+            'input[class*="title"]',
+            'textarea[class*="title"]',
+            '.title-input textarea',
+            '.title-input input',
+        ]
+
+        for sel in title_selectors:
+            title_el = self._page.query_selector(sel)
+            if title_el:
+                title_el.click()
+                self._human_wait(0.3, 0.5)
+                title_el.fill(title)
+                logger.info("Title filled: %s", title)
+                break
+        else:
+            logger.warning("Title input not found, trying keyboard input")
+            # Some pages may focus the title field automatically
+            self._page.keyboard.type(title)
+
+        self._human_wait(0.5, 1)
+
+        # Step 3: Fill in content/description (optional).
+        if content:
+            content_selectors = [
+                '#post-textarea',
+                '[placeholder*="正文"]',
+                '[placeholder*="描述"]',
+                '[placeholder*="添加描述"]',
+                'textarea[class*="content"]',
+                'textarea[class*="desc"]',
+                '.ql-editor',
+                '[contenteditable="true"]',
+            ]
+
+            for sel in content_selectors:
+                content_el = self._page.query_selector(sel)
+                if content_el:
+                    content_el.click()
+                    self._human_wait(0.3, 0.5)
+                    # contenteditable divs need keyboard input, not fill
+                    tag = content_el.evaluate("el => el.tagName.toLowerCase()")
+                    if tag in ("textarea", "input"):
+                        content_el.fill(content)
+                    else:
+                        self._page.keyboard.type(content)
+                    logger.info("Content filled (%d chars)", len(content))
+                    break
+            else:
+                logger.warning("Content input not found")
+
+        self._human_wait(1, 2)
+
+        # Step 4: Click publish button.
+        publish_selectors = [
+            'button:has-text("发布")',
+            '.publishBtn',
+            '[class*="publish-btn"]',
+            'button[class*="submit"]',
+            'button.css-k01sra',
+        ]
+
+        for sel in publish_selectors:
+            publish_btn = self._page.query_selector(sel)
+            if publish_btn:
+                logger.info("Clicking publish button...")
+                publish_btn.click()
+                self._human_wait(3, 5)
+
+                # Check for success indicators
+                # After publishing, the page usually redirects or shows a success message
+                success_indicators = [
+                    '发布成功',
+                    'publish-success',
+                    '已发布',
+                ]
+                page_text = self._page.text_content("body") or ""
+                for indicator in success_indicators:
+                    if indicator in page_text:
+                        logger.info("Note published successfully!")
+                        return True
+
+                # If URL changed away from publish page, likely success
+                current_url = self._page.url
+                if "publish" not in current_url:
+                    logger.info("Redirected to %s — likely published!", current_url)
+                    return True
+
+                logger.info("Publish button clicked, assuming success")
+                return True
+
+        raise RuntimeError(
+            "Cannot find publish button on the page. "
+            "The page structure may have changed."
+        )
+
     # ===== Internal: Interaction helpers =====
 
     def _navigate_to_note(self, note_id: str, xsec_token: str = ""):

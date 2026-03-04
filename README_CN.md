@@ -28,6 +28,7 @@
 | 👤 **用户** | `user`, `user-posts`, `followers`, `following` | 查看资料、列出笔记/粉丝/关注 |
 | ❤️ **互动** | `like`, `unlike`, `comment` | 点赞、取消点赞、评论 |
 | ⭐ **收藏** | `favorite`, `unfavorite`, `favorites` | 收藏、取消收藏、查看收藏列表 |
+| 📝 **发布** | `post` | 发布图文笔记 |
 
 > 所有数据命令支持 `--json` 输出原始 JSON。`xsec_token` 自动缓存，无需手动传递。
 
