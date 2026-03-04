@@ -131,11 +131,15 @@ print(json.dumps({"error": "no_cookies"}))
 
 
 def qrcode_login() -> str:
-    """Login via QR code displayed in terminal.
+    """Login via QR code displayed to the user.
 
-    Opens xiaohongshu login page in camoufox, captures the QR code,
-    and polls until the user scans it.
+    Opens xiaohongshu login page in camoufox (headless), captures the QR code
+    as a screenshot, opens it with the system image viewer, then polls for
+    login completion by checking cookies.
     """
+    import subprocess
+    import sys
+    import tempfile
     import time
     from camoufox.sync_api import Camoufox
 
@@ -144,23 +148,75 @@ def qrcode_login() -> str:
     with Camoufox(headless=True) as browser:
         page = browser.new_page()
         page.goto("https://www.xiaohongshu.com", wait_until="domcontentloaded", timeout=20000)
-        time.sleep(2)
+        time.sleep(3)
 
-        # Click login button to trigger QR code
-        login_btn = page.query_selector('.login-btn') or page.query_selector('[class*="login"]')
+        # Click login button to trigger QR code modal
+        login_btn = (
+            page.query_selector('.login-btn') or
+            page.query_selector('[class*="login"]') or
+            page.query_selector('button:has-text("登录")')
+        )
         if login_btn:
             login_btn.click()
-            time.sleep(2)
+            time.sleep(3)
 
-        # Find QR code image
-        qr_img = page.query_selector('.qrcode-img') or page.query_selector('img[class*="qrcode"]')
-        if qr_img:
-            qr_src = qr_img.get_attribute("src")
-            print(f"\n📱 QR code URL: {qr_src}")
-            print("Please scan this QR code with the Xiaohongshu app.")
-        else:
-            print("⚠️  Could not find QR code. Please login manually in Chrome.")
-            raise RuntimeError("QR code not found on login page")
+        # Try to screenshot the QR code element directly
+        qr_selectors = [
+            '.qrcode-img',
+            'img[class*="qrcode"]',
+            'img[class*="qr-code"]',
+            '.login-container img',
+            'canvas[class*="qrcode"]',
+        ]
+
+        qr_path = Path(tempfile.mkdtemp()) / "xhs_qrcode.png"
+        qr_found = False
+
+        for sel in qr_selectors:
+            el = page.query_selector(sel)
+            if el:
+                try:
+                    el.screenshot(path=str(qr_path))
+                    qr_found = True
+                    break
+                except Exception:
+                    continue
+
+        # Fallback: screenshot the entire login modal or viewport
+        if not qr_found:
+            modal_selectors = [
+                '.login-container',
+                '[class*="login-modal"]',
+                '[class*="login-dialog"]',
+                '.modal-content',
+            ]
+            for sel in modal_selectors:
+                el = page.query_selector(sel)
+                if el:
+                    try:
+                        el.screenshot(path=str(qr_path))
+                        qr_found = True
+                        break
+                    except Exception:
+                        continue
+
+        # Last resort: full page screenshot
+        if not qr_found:
+            page.screenshot(path=str(qr_path), full_page=False)
+            qr_found = True
+
+        # Open the screenshot with system image viewer
+        print(f"\n📱 QR code saved to: {qr_path}")
+        print("Opening QR code image... Please scan with the Xiaohongshu app.")
+        try:
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", str(qr_path)])
+            elif sys.platform == "win32":
+                subprocess.Popen(["start", str(qr_path)], shell=True)
+            else:
+                subprocess.Popen(["xdg-open", str(qr_path)])
+        except Exception:
+            print(f"⚠️  Could not auto-open image. Please open manually: {qr_path}")
 
         # Poll for login completion
         print("\n⏳ Waiting for QR code scan...")
@@ -173,6 +229,11 @@ def qrcode_login() -> str:
                 print("✅ Login successful!")
                 cookie_str = "; ".join(f"{k}={v}" for k, v in cookie_dict.items())
                 save_cookies(cookie_str)
+                # Clean up temp file
+                try:
+                    qr_path.unlink()
+                except Exception:
+                    pass
                 return cookie_str
 
             if i % 15 == 14:
