@@ -88,17 +88,51 @@ def login(qrcode: bool, cookie_str: str | None):
     if not qrcode:
         cookie = get_cookie_string()
         if cookie:
-            # Quick verify: try loading homepage + extracting __INITIAL_STATE__
-            console.print(f"[green]✅ Logged in (from browser cookies)[/green]")
-            return
+            # Validate by actually loading the page and checking user data
+            cookie_dict = _parse_cookie_dict(cookie)
+            if _verify_cookies(cookie_dict):
+                console.print("[green]✅ Logged in (from browser cookies)[/green]")
+                return
+            else:
+                console.print("[yellow]⚠️  Found cookies but session is invalid/expired.[/yellow]")
+                # Clear stale cookies so they don't get reused
+                clear_cookies()
 
     # QR code login
+    console.print("[dim]Falling back to QR code login...[/dim]")
     try:
         cookie = qrcode_login()
         console.print("[green]✅ Login successful! Cookie saved.[/green]")
     except Exception as e:
         console.print(f"[red]❌ Login failed: {e}[/red]")
         sys.exit(1)
+
+
+def _verify_cookies(cookie_dict: dict[str, str]) -> bool:
+    """Quick check: load homepage with cookies and see if we get a valid user.
+
+    Returns True if the session is valid (has a real user), False otherwise.
+    """
+    from .client import XhsClient
+
+    try:
+        client = XhsClient(cookie_dict)
+        client.start()
+        info = client.get_self_info()
+        client.close()
+
+        # Check if we got a real nickname (not "Unknown")
+        basic = info.get("basicInfo", info.get("basic_info", {}))
+        user_page = info.get("userPageData", {})
+        if user_page:
+            basic = user_page.get("basicInfo", user_page.get("basic_info", basic))
+        if not basic or not isinstance(basic, dict):
+            basic = info
+
+        nickname = basic.get("nickname", basic.get("nick_name", ""))
+        return bool(nickname and nickname != "Unknown")
+    except Exception:
+        return False
 
 
 @cli.command()
