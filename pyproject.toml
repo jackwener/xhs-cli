@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "xhs-cli"
 version = "0.1.0"
@@ -5,6 +9,22 @@ description = "A CLI for Xiaohongshu (小红书) — search, read notes, view pr
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.8"
+authors = [{ name = "jackwener", email = "jackwener@gmail.com" }]
+keywords = ["xiaohongshu", "xhs", "cli", "redbook", "小红书"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Utilities",
+]
 dependencies = [
     "camoufox[geoip]>=0.4",
     "playwright>=1.40",
@@ -12,6 +32,11 @@ dependencies = [
     "click>=8.0",
     "rich>=13.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/jackwener/xhs-cli"
+Repository = "https://github.com/jackwener/xhs-cli"
+Issues = "https://github.com/jackwener/xhs-cli/issues"
 
 [project.scripts]
 xhs = "xhs_cli.cli:cli"
