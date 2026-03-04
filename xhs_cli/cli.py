@@ -175,19 +175,36 @@ def whoami(as_json: bool):
         # Extract user details from various data paths
         basic = info.get("basicInfo", info.get("basic_info", {}))
         user_page = info.get("userPageData", {})
-        if user_page:
-            basic = user_page.get("basicInfo", user_page.get("basic_info", basic))
+        if user_page and isinstance(user_page, dict):
+            bp = user_page.get("basicInfo", user_page.get("basic_info", {}))
+            if bp and isinstance(bp, dict) and bp.get("nickname"):
+                basic = bp
 
-        user_info = info.get("userInfo", {})
-        if user_info and not basic:
-            basic = user_info
+        user_info_block = info.get("userInfo", {})
+        if isinstance(user_info_block, dict) and not basic.get("nickname"):
+            # Guest profile — userInfo has userId but no nickname
+            # Try to fetch full profile using the user_id
+            uid = user_info_block.get("userId", "")
+            if uid:
+                try:
+                    full = client.get_user_info(uid)
+                    if isinstance(full, dict):
+                        bp = full.get("userPageData", {}).get("basicInfo", {})
+                        if isinstance(bp, dict) and bp.get("nickname"):
+                            basic = bp
+                            info = full
+                except Exception:
+                    pass
+            if not basic.get("nickname"):
+                basic = user_info_block
 
         if not basic or not isinstance(basic, dict):
             basic = info
 
-        nickname = basic.get("nickname", basic.get("nick_name", "Unknown"))
+        nickname = basic.get("nickname", basic.get("nick_name", ""))
+        user_id = basic.get("userId", basic.get("user_id", basic.get("id", "")))
 
-        if nickname == "Unknown":
+        if not nickname and not user_id:
             console.print("[red]❌ Session expired or invalid. Run `xhs login` to re-authenticate.[/red]")
             client.close()
             sys.exit(1)
@@ -196,7 +213,6 @@ def whoami(as_json: bool):
         ip_location = basic.get("ipLocation", basic.get("ip_location", ""))
         desc = basic.get("desc", basic.get("description", ""))
         gender = basic.get("gender", "")
-        user_id = basic.get("userId", basic.get("user_id", basic.get("id", "")))
 
         # Interaction stats (fans, following, note count)
         interactions = (user_page.get("interactions", []) or
@@ -211,7 +227,8 @@ def whoami(as_json: bool):
                     if name and count is not None:
                         stats[name] = str(count)
 
-        table = Table(title=f"👤 {nickname}")
+        display_name = nickname or f"User {user_id}"
+        table = Table(title=f"👤 {display_name}")
         table.add_column("Field", style="cyan")
         table.add_column("Value", style="green")
         if red_id:
@@ -415,8 +432,13 @@ def user_posts(user_id: str, as_json: bool):
         # Cache xsec_tokens from user posts for later use
         token_map = {}
         for i, item in enumerate(posts, 1):
+            # Skip non-dict items (can happen from Vue reactive unwrap)
+            if not isinstance(item, dict):
+                continue
             # Handle different data shapes from __INITIAL_STATE__
             note_card = item.get("note_card", item.get("noteCard", item))
+            if not isinstance(note_card, dict):
+                note_card = item
             interact = note_card.get("interact_info", note_card.get("interactInfo", {}))
             note_id = item.get("id", item.get("note_id", item.get("noteId", "")))
             xsec = item.get("xsec_token", item.get("xsecToken", ""))
@@ -764,6 +786,8 @@ def favorites(max_count: int, as_json: bool):
         # Cache xsec_tokens for later use
         token_map = {}
         for note in notes:
+            if not isinstance(note, dict):
+                continue
             nid = note.get("noteId", note.get("note_id", note.get("id", "")))
             token = note.get("xsecToken", note.get("xsec_token", ""))
             if nid and token:
@@ -778,7 +802,9 @@ def favorites(max_count: int, as_json: bool):
         table.add_column("Likes", justify="right", width=6)
         table.add_column("Note ID", style="dim")
 
-        for i, note in enumerate(notes, 1):
+        # Filter to dict-only items
+        dict_notes = [n for n in notes if isinstance(n, dict)]
+        for i, note in enumerate(dict_notes, 1):
             nid = note.get("noteId", note.get("note_id", note.get("id", "")))
             title = note.get("displayTitle", note.get("display_title", note.get("title", "")))
             # Extract author name

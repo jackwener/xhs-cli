@@ -497,14 +497,27 @@ class XhsClient:
         info = self.get_self_info()
         user_id = ""
         if isinstance(info, dict):
-            basic = info.get("basicInfo", info.get("basic_info", {}))
-            user_page = info.get("userPageData", {})
-            if user_page:
-                basic = user_page.get("basicInfo", user_page.get("basic_info", basic))
-            if not basic or not isinstance(basic, dict):
-                basic = info
-            user_id = (basic.get("userId", "") or basic.get("user_id", "") or
-                       basic.get("id", ""))
+            # Try multiple extraction paths — page structure varies
+            for path_key in ["userInfo", "basicInfo", "basic_info"]:
+                sub = info.get(path_key, {})
+                if isinstance(sub, dict):
+                    uid = sub.get("userId", "") or sub.get("user_id", "")
+                    if uid:
+                        user_id = uid
+                        break
+
+            # Also check userPageData.basicInfo
+            if not user_id:
+                user_page = info.get("userPageData", {})
+                if isinstance(user_page, dict):
+                    basic = user_page.get("basicInfo", user_page.get("basic_info", {}))
+                    if isinstance(basic, dict):
+                        user_id = basic.get("userId", "") or basic.get("user_id", "")
+
+            # Last resort: top-level keys
+            if not user_id:
+                user_id = (info.get("userId", "") or info.get("user_id", "") or
+                           info.get("id", ""))
 
         if not user_id:
             raise RuntimeError("Cannot determine user_id. Make sure you are logged in.")
@@ -576,6 +589,8 @@ class XhsClient:
 
             if isinstance(notes, list):
                 for note in notes:
+                    if not isinstance(note, dict):
+                        continue
                     nid = note.get("noteId", note.get("note_id", note.get("id", "")))
                     if nid and nid not in seen_ids:
                         seen_ids.add(nid)
@@ -659,19 +674,25 @@ class XhsClient:
             return {}
 
         # Try to find user_id so we can navigate to profile for full info.
-        # user_id might be in basicInfo.userId, userId, user_id, id, etc.
         user_id = None
         if isinstance(result, dict):
-            basic = result.get("basicInfo", result.get("basic_info", result))
-            user_id = (basic.get("userId", "") or basic.get("user_id", "") or
-                       basic.get("id", "") or result.get("userId", "") or
-                       result.get("user_id", "") or result.get("id", ""))
+            # Check multiple paths where userId might live
+            for sub_key in ["userInfo", "basicInfo", "basic_info"]:
+                sub = result.get(sub_key, {})
+                if isinstance(sub, dict):
+                    uid = sub.get("userId", "") or sub.get("user_id", "")
+                    if uid:
+                        user_id = uid
+                        break
+            if not user_id:
+                user_id = (result.get("userId", "") or result.get("user_id", "") or
+                           result.get("id", ""))
 
         # If we got a user_id, fetch their full profile page for richer data
         if user_id:
             try:
                 full_info = self.get_user_info(user_id)
-                if full_info:
+                if full_info and isinstance(full_info, dict):
                     return full_info
             except Exception:
                 pass
