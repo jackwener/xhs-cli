@@ -229,6 +229,16 @@ def qrcode_login() -> str:
         print("\n📱 Scan the QR code below with the Xiaohongshu app:\n")
         _display_image_in_terminal(qr_path)
 
+        # Record current web_session value BEFORE user scans.
+        # The page may already have a stale web_session cookie from
+        # the initial load, so we only consider login successful when
+        # a NEW or CHANGED web_session appears.
+        initial_cookies = page.context.cookies()
+        initial_session = ""
+        for c in initial_cookies:
+            if c["name"] == "web_session" and "xiaohongshu" in c.get("domain", ""):
+                initial_session = c["value"]
+
         # Poll for login completion
         print("\n⏳ Waiting for QR code scan...")
         for i in range(120):
@@ -236,7 +246,9 @@ def qrcode_login() -> str:
             cookies = page.context.cookies()
             cookie_dict = {c["name"]: c["value"] for c in cookies if "xiaohongshu" in c.get("domain", "")}
 
-            if "web_session" in cookie_dict:
+            current_session = cookie_dict.get("web_session", "")
+            # Login is successful only when web_session is NEW or CHANGED
+            if current_session and current_session != initial_session:
                 print("✅ Login successful!")
                 cookie_str = "; ".join(f"{k}={v}" for k, v in cookie_dict.items())
                 save_cookies(cookie_str)
