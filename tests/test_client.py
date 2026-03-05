@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import pytest
+
 from xhs_cli.client import XhsClient
+from xhs_cli.exceptions import DataFetchError, LoginError
 
 
 class _FakePage:
@@ -15,14 +18,30 @@ class _FakePage:
 
 
 class _FakeProfilePage:
-    def __init__(self, evaluate_result):
+    def __init__(self, evaluate_result, url: str = "https://www.xiaohongshu.com/user/profile/u123"):
         self._evaluate_result = evaluate_result
+        self.url = url
 
     def goto(self, *_args, **_kwargs):
         return None
 
     def evaluate(self, _script, *_args):
         return self._evaluate_result
+
+    def text_content(self, _selector):
+        return ""
+
+
+class _FakeWaitPage:
+    def __init__(self, url: str, body: str):
+        self.url = url
+        self._body = body
+
+    def evaluate(self, _script, *_args):
+        return False
+
+    def text_content(self, _selector):
+        return self._body
 
 
 class TestGetNoteComments:
@@ -79,6 +98,12 @@ class TestPublishResultHeuristic:
             "https://creator.xiaohongshu.com/login",
         )
 
+    def test_failure_when_only_generic_success_word_present(self):
+        assert not XhsClient._is_publish_success(
+            "Operation success",
+            "https://creator.xiaohongshu.com/publish/publish",
+        )
+
     def test_extract_note_id_from_explore_url(self):
         note_id = XhsClient._extract_note_id_from_url("https://www.xiaohongshu.com/explore/abc123")
         assert note_id == "abc123"
@@ -108,3 +133,37 @@ class TestGetUserInfoFallback:
 
         info = client.get_user_info("u123")
         assert info == {"userInfo": {"userId": "u123"}}
+
+
+class TestWaitForData:
+    def test_raises_login_error_when_verification_page_detected(self, monkeypatch):
+        client = XhsClient({})
+        client._page = _FakeWaitPage(
+            "https://www.xiaohongshu.com/website-login/captcha?verifyUuid=abc",
+            "Security Verification",
+        )
+        monkeypatch.setattr("xhs_cli.client.time.sleep", lambda *_args, **_kwargs: None)
+
+        with pytest.raises(LoginError, match="security verification"):
+            client._wait_for_data(
+                "() => false",
+                timeout=0.01,
+                desc="user profile",
+                raise_on_timeout=True,
+            )
+
+    def test_raises_data_fetch_error_when_not_blocked(self, monkeypatch):
+        client = XhsClient({})
+        client._page = _FakeWaitPage(
+            "https://www.xiaohongshu.com/user/profile/u123",
+            "normal page body",
+        )
+        monkeypatch.setattr("xhs_cli.client.time.sleep", lambda *_args, **_kwargs: None)
+
+        with pytest.raises(DataFetchError, match="user profile"):
+            client._wait_for_data(
+                "() => false",
+                timeout=0.01,
+                desc="user profile",
+                raise_on_timeout=True,
+            )

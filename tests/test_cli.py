@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import pytest
 from click.testing import CliRunner
 
@@ -84,6 +86,11 @@ class TestLoginCookieValidation:
 
     def test_login_cookie_missing_web_session(self, runner, tmp_config_dir):
         result = runner.invoke(cli, ["login", "--cookie", "a1=abc_only"])
+        assert result.exit_code == 1
+        assert "Invalid cookie" in result.output
+
+    def test_login_cookie_name_collision_is_invalid(self, runner, tmp_config_dir):
+        result = runner.invoke(cli, ["login", "--cookie", "my_a1=abc; my_web_session=xyz"])
         assert result.exit_code == 1
         assert "Invalid cookie" in result.output
 
@@ -279,3 +286,42 @@ class TestProbeSessionUsability:
             lambda _cookie_dict: _FakeProbeClient(error=RuntimeError("temporary")),
         )
         assert cli_module._probe_session_usability({"a1": "x", "web_session": "y"}) is None
+
+
+class _FakeDataClient:
+    def search_notes(self, _keyword):
+        return [
+            "bad-item",
+            {
+                "id": "n1",
+                "xsec_token": "tok1",
+                "note_card": {
+                    "display_title": "title",
+                    "user": {"nickname": "alice"},
+                    "interact_info": {"liked_count": 12},
+                },
+            },
+        ]
+
+    def get_followers(self, _user_id):
+        return ["bad-user", {"nickname": "bob", "userId": "u1"}]
+
+
+@contextmanager
+def _fake_client_ctx(client):
+    yield client
+
+
+class TestCliRobustness:
+    def test_search_skips_non_dict_items(self, runner, monkeypatch):
+        monkeypatch.setattr(cli_module, "_get_client", lambda: _fake_client_ctx(_FakeDataClient()))
+        monkeypatch.setattr(cli_module, "save_token_cache", lambda *_args, **_kwargs: None)
+        result = runner.invoke(cli, ["search", "coffee"])
+        assert result.exit_code == 0
+        assert "Search: coffee" in result.output
+
+    def test_followers_skips_non_dict_items(self, runner, monkeypatch):
+        monkeypatch.setattr(cli_module, "_get_client", lambda: _fake_client_ctx(_FakeDataClient()))
+        result = runner.invoke(cli, ["followers", "u123"])
+        assert result.exit_code == 0
+        assert "Followers" in result.output

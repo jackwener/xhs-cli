@@ -24,6 +24,7 @@ from rich.table import Table
 
 from . import __version__
 from .auth import (
+    REQUIRED_COOKIES,
     clear_cookies,
     cookie_str_to_dict,
     get_cookie_string,
@@ -48,6 +49,27 @@ def _setup_logging(verbose: bool):
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         datefmt="%H:%M:%S",
     )
+
+
+def _iter_dict_items(items) -> Iterator[dict]:
+    """Yield only dict items from a possibly mixed list."""
+    if not isinstance(items, list):
+        return
+    for item in items:
+        if isinstance(item, dict):
+            yield item
+
+
+def _cache_note_tokens(items):
+    """Cache note_id -> xsec_token from search/feed/favorites style payloads."""
+    token_map: dict[str, str] = {}
+    for item in _iter_dict_items(items):
+        note_id = str(item.get("id", "") or item.get("noteId", "") or item.get("note_id", ""))
+        token = str(item.get("xsec_token", "") or item.get("xsecToken", ""))
+        if note_id and token:
+            token_map[note_id] = token
+    if token_map:
+        save_token_cache(token_map)
 
 
 @contextmanager
@@ -86,19 +108,15 @@ def login(ctx: click.Context, qrcode: bool, cookie_str: str | None):
         ctx.get_parameter_source("cookie_str") == ParameterSource.COMMANDLINE
     )
     if cookie_provided:
-        # Basic validation: require both a1 and web_session for a usable session.
-        if (
-            not cookie_str
-            or "a1=" not in cookie_str
-            or "web_session=" not in cookie_str
-        ):
+        parsed = cookie_str_to_dict(cookie_str or "")
+        if not REQUIRED_COOKIES.issubset(parsed.keys()):
             console.print(
                 "[red]❌ Invalid cookie string. Must contain at least "
                 "'a1=...' and 'web_session=...'.[/red]"
             )
             sys.exit(1)
         from .auth import save_cookies
-        save_cookies(cookie_str)
+        save_cookies("; ".join(f"{k}={v}" for k, v in parsed.items()))
         console.print("[green]✅ Cookie saved![/green]")
         return
 
@@ -362,14 +380,7 @@ def search(keyword: str, as_json: bool):
 
             # Cache note_id -> xsec_token mapping so subsequent commands
             # (note, like, favorite, comment) can auto-resolve tokens.
-            token_map = {}
-            for item in feeds:
-                nid = item.get("id", "")
-                xsec = item.get("xsec_token", item.get("xsecToken", ""))
-                if nid and xsec:
-                    token_map[nid] = xsec
-            if token_map:
-                save_token_cache(token_map)
+            _cache_note_tokens(feeds)
 
             if as_json:
                 click.echo(json.dumps(feeds, indent=2, ensure_ascii=False))
@@ -386,16 +397,28 @@ def search(keyword: str, as_json: bool):
             table.add_column("Likes", style="red", justify="right")
             table.add_column("Note ID", style="dim")
 
-            for i, item in enumerate(feeds, 1):
+            display_index = 0
+            for item in _iter_dict_items(feeds):
                 card = item.get("note_card", item.get("noteCard", {}))
+                if not isinstance(card, dict):
+                    continue
+                display_index += 1
                 user = card.get("user", {})
                 interact = card.get("interact_info", card.get("interactInfo", {}))
                 note_id = item.get("id", "")
                 table.add_row(
-                    str(i),
+                    str(display_index),
                     card.get("display_title", card.get("displayTitle", ""))[:40],
-                    user.get("nickname", user.get("nick_name", ""))[:15],
-                    str(interact.get("liked_count", interact.get("likedCount", "0"))),
+                    (
+                        user.get("nickname", user.get("nick_name", ""))[:15]
+                        if isinstance(user, dict)
+                        else ""
+                    ),
+                    (
+                        str(interact.get("liked_count", interact.get("likedCount", "0")))
+                        if isinstance(interact, dict)
+                        else "0"
+                    ),
                     note_id,
                 )
 
@@ -456,9 +479,11 @@ def read(note_id: str, xsec_token: str, comments: bool, as_json: bool):
                     clist = clist.get("comments", [])
                 console.print(f"\n[bold]Comments ({len(clist)}):[/bold]")
                 for c in clist[:20]:
+                    if not isinstance(c, dict):
+                        continue
                     u = c.get("userInfo", c.get("user_info", {}))
                     console.print(
-                        f"  [green]{u.get('nickname', '')}[/green]: "
+                        f"  [green]{u.get('nickname', '') if isinstance(u, dict) else ''}[/green]: "
                         f"{c.get('content', '')}"
                     )
 
@@ -576,11 +601,13 @@ def followers(user_id: str, as_json: bool):
             table.add_column("Red ID", style="dim")
             table.add_column("User ID", style="dim")
 
-            for i, u in enumerate(users, 1):
+            display_index = 0
+            for u in _iter_dict_items(users):
+                display_index += 1
                 nickname = u.get("nickname", u.get("nick_name", ""))
                 red_id = u.get("redId", u.get("red_id", ""))
                 uid = u.get("userId", u.get("user_id", u.get("id", "")))
-                table.add_row(str(i), nickname, red_id, uid)
+                table.add_row(str(display_index), nickname, red_id, uid)
 
             console.print(table)
 
@@ -612,11 +639,13 @@ def following(user_id: str, as_json: bool):
             table.add_column("Red ID", style="dim")
             table.add_column("User ID", style="dim")
 
-            for i, u in enumerate(users, 1):
+            display_index = 0
+            for u in _iter_dict_items(users):
+                display_index += 1
                 nickname = u.get("nickname", u.get("nick_name", ""))
                 red_id = u.get("redId", u.get("red_id", ""))
                 uid = u.get("userId", u.get("user_id", u.get("id", "")))
-                table.add_row(str(i), nickname, red_id, uid)
+                table.add_row(str(display_index), nickname, red_id, uid)
 
             console.print(table)
 
@@ -636,14 +665,7 @@ def feed(as_json: bool):
             feeds = client.get_feed()
 
             # Cache xsec_tokens from feed for later use
-            token_map = {}
-            for item in feeds:
-                nid = item.get("id", "")
-                xsec = item.get("xsec_token", item.get("xsecToken", ""))
-                if nid and xsec:
-                    token_map[nid] = xsec
-            if token_map:
-                save_token_cache(token_map)
+            _cache_note_tokens(feeds)
 
             if as_json:
                 click.echo(json.dumps(feeds, indent=2, ensure_ascii=False))
@@ -660,16 +682,28 @@ def feed(as_json: bool):
             table.add_column("Likes", style="red", justify="right")
             table.add_column("Note ID", style="dim")
 
-            for i, item in enumerate(feeds, 1):
+            display_index = 0
+            for item in _iter_dict_items(feeds):
                 card = item.get("note_card", item.get("noteCard", {}))
+                if not isinstance(card, dict):
+                    continue
+                display_index += 1
                 u = card.get("user", {})
                 interact = card.get("interact_info", card.get("interactInfo", {}))
                 note_id = item.get("id", "")
                 table.add_row(
-                    str(i),
+                    str(display_index),
                     card.get("display_title", card.get("displayTitle", ""))[:40],
-                    u.get("nickname", u.get("nick_name", ""))[:15],
-                    str(interact.get("liked_count", interact.get("likedCount", "0"))),
+                    (
+                        u.get("nickname", u.get("nick_name", ""))[:15]
+                        if isinstance(u, dict)
+                        else ""
+                    ),
+                    (
+                        str(interact.get("liked_count", interact.get("likedCount", "0")))
+                        if isinstance(interact, dict)
+                        else "0"
+                    ),
                     note_id,
                 )
 
@@ -707,7 +741,9 @@ def topics(keyword: str, as_json: bool):
             table.add_column("Note Count", style="green", justify="right")
             table.add_column("ID", style="dim")
 
-            for i, item in enumerate(results, 1):
+            display_index = 0
+            for item in _iter_dict_items(results):
+                display_index += 1
                 # Topics may have different structure than notes
                 name = (item.get("name", "") or
                         item.get("title", "") or
@@ -718,7 +754,7 @@ def topics(keyword: str, as_json: bool):
                 note_count = item.get("note_count", item.get("noteCount",
                              item.get("note_num", item.get("noteNum", ""))))
                 table.add_row(
-                    str(i),
+                    str(display_index),
                     str(name)[:30],
                     str(view_count) if view_count else "-",
                     str(note_count) if note_count else "-",
@@ -868,16 +904,7 @@ def favorites(max_count: int, as_json: bool):
                 return
 
             # Cache xsec_tokens for later use
-            token_map = {}
-            for note in notes:
-                if not isinstance(note, dict):
-                    continue
-                nid = note.get("noteId", note.get("note_id", note.get("id", "")))
-                token = note.get("xsecToken", note.get("xsec_token", ""))
-                if nid and token:
-                    token_map[nid] = token
-            if token_map:
-                save_token_cache(token_map)
+            _cache_note_tokens(notes)
 
             table = Table(title=f"⭐ Favorites ({len(notes)} items)")
             table.add_column("#", style="dim", width=4)

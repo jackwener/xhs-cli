@@ -67,18 +67,20 @@ class XhsClient:
             "发布成功",
             "已发布",
             "publish-success",
-            "published",
-            "success",
+            "published successfully",
         ]
         normalized = (page_text or "").lower()
+        url = (current_url or "").lower()
+        if "creator.xiaohongshu.com/login" in url or "website-login/captcha" in url:
+            return False
+        on_publish_page = "publish/publish" in url
         if any(indicator.lower() in normalized for indicator in success_indicators):
             return True
-        url = (current_url or "").lower()
-        if "publish" in url:
+        if on_publish_page:
             return False
         if note_id and note_id.lower() in url:
             return True
-        if re.search(r"/notes?/([a-zA-Z0-9]+)", url):
+        if re.search(r"/(explore|notes?)/([a-zA-Z0-9]+)", url):
             return True
         return False
 
@@ -133,12 +135,13 @@ class XhsClient:
         self._page.context.add_cookies(cookies)
 
         # Navigate to homepage to establish session
-        self._page.goto(
+        self._goto(
             "https://www.xiaohongshu.com",
-            wait_until="domcontentloaded",
             timeout=20000,
+            wait_min=1,
+            wait_max=2,
+            context="establishing browser session",
         )
-        self._human_wait(1, 2)
         logger.info("Browser ready.")
 
     def close(self):
@@ -165,8 +168,13 @@ class XhsClient:
         url = f"https://www.xiaohongshu.com/search_result?{params}"
 
         logger.info("Searching: %s", keyword)
-        self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
-        self._human_wait(1, 2)
+        self._goto(
+            url,
+            timeout=20000,
+            wait_min=1,
+            wait_max=2,
+            context="loading search page",
+        )
 
         # Wait for search.feeds to be populated by Vue
         self._wait_for_data(
@@ -176,7 +184,7 @@ class XhsClient:
                 const f = s.search.feeds;
                 if (!f) return false;
                 const d = f._rawValue || f._value || f.value || f;
-                return Array.isArray(d) && d.length > 0;
+                return Array.isArray(d) || (d && typeof d === 'object');
             }""",
             timeout=15.0,
             desc="search.feeds",
@@ -213,8 +221,13 @@ class XhsClient:
             url += f"?xsec_token={xsec_token}&xsec_source=pc_feed"
 
         logger.info("Loading note: %s", note_id)
-        self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
-        self._human_wait(1.5, 3)
+        self._goto(
+            url,
+            timeout=20000,
+            wait_min=1.5,
+            wait_max=3,
+            context=f"loading note {note_id}",
+        )
 
         self._wait_for_data(
             """() => {
@@ -260,8 +273,13 @@ class XhsClient:
         url = f"https://www.xiaohongshu.com/user/profile/{user_id}"
 
         logger.info("Loading user profile: %s", user_id)
-        self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
-        self._human_wait(1.5, 3)
+        self._goto(
+            url,
+            timeout=20000,
+            wait_min=1.5,
+            wait_max=3,
+            context=f"loading user profile {user_id}",
+        )
 
         self._wait_for_data(
             """() => {
@@ -316,8 +334,13 @@ class XhsClient:
         """
         url = f"https://www.xiaohongshu.com/user/profile/{user_id}?tab={tab}"
         logger.info("Loading %s list for user %s", tab, user_id)
-        self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
-        self._human_wait(2, 3)
+        self._goto(
+            url,
+            timeout=20000,
+            wait_min=2,
+            wait_max=3,
+            context=f"loading {tab} list for user {user_id}",
+        )
         self._wait_for_data(
             """() => {
                 const s = window.__INITIAL_STATE__;
@@ -379,8 +402,13 @@ class XhsClient:
         url = f"https://www.xiaohongshu.com/user/profile/{user_id}"
 
         logger.info("Loading user posts: %s", user_id)
-        self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
-        self._human_wait(1.5, 3)
+        self._goto(
+            url,
+            timeout=20000,
+            wait_min=1.5,
+            wait_max=3,
+            context=f"loading user posts for {user_id}",
+        )
 
         self._wait_for_data(
             """() => {
@@ -389,7 +417,7 @@ class XhsClient:
                 const n = s.user.notes;
                 if (!n) return false;
                 const d = n._rawValue || n._value || n.value || n;
-                return Array.isArray(d) ? d.length > 0 : (d && typeof d === 'object');
+                return Array.isArray(d) || (d && typeof d === 'object');
             }""",
             timeout=15.0,
             desc="user.notes",
@@ -434,12 +462,13 @@ class XhsClient:
         from __INITIAL_STATE__.feed.
         """
         logger.info("Loading explore feed...")
-        self._page.goto(
+        self._goto(
             "https://www.xiaohongshu.com/explore",
-            wait_until="domcontentloaded",
             timeout=20000,
+            wait_min=2,
+            wait_max=4,
+            context="loading explore feed",
         )
-        self._human_wait(2, 4)
         self._wait_for_data(
             """() => {
                 const s = window.__INITIAL_STATE__;
@@ -449,7 +478,7 @@ class XhsClient:
                           (s.homefeed && s.homefeed.feeds);
                 if (!f) return false;
                 const d = f._rawValue || f._value || f.value || f;
-                return Array.isArray(d) && d.length > 0;
+                return Array.isArray(d) || (d && typeof d === 'object');
             }""",
             timeout=15.0,
             desc="feed.feeds",
@@ -511,8 +540,13 @@ class XhsClient:
         url = f"https://www.xiaohongshu.com/search_result?{params}"
 
         logger.info("Searching topics: %s", keyword)
-        self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
-        self._human_wait(1.5, 3)
+        self._goto(
+            url,
+            timeout=20000,
+            wait_min=1.5,
+            wait_max=3,
+            context="loading topics search page",
+        )
 
         self._wait_for_data(
             """() => {
@@ -521,7 +555,7 @@ class XhsClient:
                 const t = s.search.topics || s.search.feeds;
                 if (!t) return false;
                 const d = t._rawValue || t._value || t.value || t;
-                return Array.isArray(d) && d.length > 0;
+                return Array.isArray(d) || (d && typeof d === 'object');
             }""",
             timeout=15.0,
             desc="search.topics",
@@ -600,8 +634,13 @@ class XhsClient:
         # Navigate to user's collect tab
         url = f"https://www.xiaohongshu.com/user/profile/{user_id}?tab=collect"
         logger.info("Loading favorites: %s", url)
-        self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
-        self._human_wait(2, 3)
+        self._goto(
+            url,
+            timeout=20000,
+            wait_min=2,
+            wait_max=3,
+            context="loading favorites page",
+        )
         self._wait_for_data(
             """() => {
                 const s = window.__INITIAL_STATE__;
@@ -693,12 +732,13 @@ class XhsClient:
         2. If user_id found, navigate to profile page for full info
         3. Falls back to whatever data is available from homepage
         """
-        self._page.goto(
+        self._goto(
             "https://www.xiaohongshu.com",
-            wait_until="domcontentloaded",
             timeout=15000,
+            wait_min=1,
+            wait_max=2,
+            context="loading homepage for self info",
         )
-        self._human_wait(1, 2)
         self._wait_for_data(
             """() => {
                 const s = window.__INITIAL_STATE__;
@@ -968,8 +1008,13 @@ class XhsClient:
 
         publish_url = "https://creator.xiaohongshu.com/publish/publish"
         logger.info("Navigating to publish page: %s", publish_url)
-        self._page.goto(publish_url, wait_until="domcontentloaded", timeout=30000)
-        self._human_wait(3, 5)
+        self._goto(
+            publish_url,
+            timeout=30000,
+            wait_min=3,
+            wait_max=5,
+            context="loading creator publish page",
+        )
 
         # Creator publishing may require an additional login session.
         for frame in self._page.frames:
@@ -1255,8 +1300,13 @@ class XhsClient:
         if xsec_token:
             url += f"?xsec_token={xsec_token}&xsec_source=pc_feed"
         try:
-            self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
-            self._human_wait(1, 2)
+            self._goto(
+                url,
+                timeout=20000,
+                wait_min=1,
+                wait_max=2,
+                context=f"verifying deletion for note {note_id}",
+            )
             exists = self._page.evaluate("""(targetNoteId) => {
                 const s = window.__INITIAL_STATE__;
                 if (!s || !s.note || !s.note.noteDetailMap) return false;
@@ -1282,8 +1332,13 @@ class XhsClient:
         url = f"https://www.xiaohongshu.com/explore/{note_id}"
         if xsec_token:
             url += f"?xsec_token={xsec_token}&xsec_source=pc_feed"
-        self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
-        self._human_wait(1.5, 3)
+        self._goto(
+            url,
+            timeout=20000,
+            wait_min=1.5,
+            wait_max=3,
+            context=f"loading note {note_id}",
+        )
         self._wait_for_data(
             """() => {
                 const s = window.__INITIAL_STATE__;
@@ -1373,6 +1428,66 @@ class XhsClient:
 
     # ===== Internal helpers =====
 
+    def _goto(
+        self,
+        url: str,
+        *,
+        timeout: int = 20000,
+        wait_until: str = "domcontentloaded",
+        wait_min: float = 1.0,
+        wait_max: float = 2.0,
+        context: str = "loading page",
+    ):
+        """Navigate to URL and fail fast if redirected to risk-control pages."""
+        self._page.goto(url, wait_until=wait_until, timeout=timeout)
+        self._human_wait(wait_min, wait_max)
+        self._raise_if_blocked(context, include_body=True)
+
+    def _detect_block_reason(self, include_body: bool = False) -> str:
+        """Detect whether current page is a security verification/risk-control page."""
+        if not self._page:
+            return ""
+
+        page_url = getattr(self._page, "url", "") or ""
+        url = page_url.lower()
+        url_markers = (
+            "website-login/captcha",
+            "verifyuuid=",
+            "verifytype=",
+        )
+        if any(marker in url for marker in url_markers):
+            return f"redirected to verification URL: {page_url}"
+
+        if not include_body:
+            return ""
+
+        try:
+            body_text = (self._page.text_content("body") or "").lower()
+        except Exception:
+            return ""
+
+        body_markers = (
+            "security verification",
+            "scan with logged-in",
+            "qr code expires",
+            "requests too frequent",
+            "try again later",
+            "请求过于频繁",
+            "请求太频繁",
+            "安全验证",
+            "扫码验证",
+        )
+        for marker in body_markers:
+            if marker in body_text:
+                return f"verification page content detected ({marker})"
+        return ""
+
+    def _raise_if_blocked(self, context: str, include_body: bool = False):
+        """Raise LoginError when the page is blocked by risk control."""
+        reason = self._detect_block_reason(include_body=include_body)
+        if reason:
+            raise LoginError(f"Blocked by security verification while {context}: {reason}")
+
     def _wait_for_initial_state(self, timeout: float = 10.0):
         """Wait for window.__INITIAL_STATE__ to be populated."""
         start = time.time()
@@ -1383,6 +1498,9 @@ class XhsClient:
                 )
                 if result:
                     return
+                self._raise_if_blocked("waiting for initial state", include_body=False)
+            except LoginError:
+                raise
             except Exception:
                 pass
             time.sleep(0.3)
@@ -1406,9 +1524,13 @@ class XhsClient:
                 if self._page.evaluate(js_condition):
                     logger.debug("%s ready after %.1fs", desc, time.time() - start)
                     return
+                self._raise_if_blocked(f"waiting for {desc}", include_body=False)
+            except LoginError:
+                raise
             except Exception:
                 pass
             time.sleep(0.5)
+        self._raise_if_blocked(f"waiting for {desc}", include_body=True)
         logger.warning("%s not ready after %.1fs", desc, timeout)
         if raise_on_timeout:
             raise DataFetchError(f"{desc} not ready after {timeout:.1f}s")
