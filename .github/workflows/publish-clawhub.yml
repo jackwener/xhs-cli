@@ -34,7 +34,15 @@ jobs:
             exit 1
           fi
 
-          VERSION="${GITHUB_REF_NAME#v}"
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ] && [ -n "${GITHUB_REF_NAME:-}" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(sed -n 's/^version = \"\([^\"]*\)\"/\1/p' pyproject.toml | head -n 1)"
+          fi
+          if [ -z "${VERSION:-}" ]; then
+            echo "Unable to resolve version"
+            exit 1
+          fi
           echo "Publishing ${CLAWHUB_SLUG}@${VERSION}"
 
           if clawhub --no-input inspect "${CLAWHUB_SLUG}" --version "${VERSION}" >/dev/null 2>&1; then
