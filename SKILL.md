@@ -20,12 +20,12 @@ uv tool install xhs-cli
 All commands require valid cookies to function.
 
 ```bash
-xhs status                     # Check if logged in
+xhs status                     # Check saved login session (no browser extraction)
 xhs login                      # Auto-extract Chrome cookies
 xhs login --cookie "a1=..."    # Or provide cookies manually
 ```
 
-Authentication auto-detects local Chrome cookies via browser-cookie3. If extraction fails, QR code login is available.
+Authentication first uses saved local cookies. If unavailable, it auto-detects local Chrome cookies via browser-cookie3. If extraction fails, QR code login is available.
 
 ## Command Reference
 
@@ -103,7 +103,7 @@ xhs post "标题" --image photo1.jpg --image photo2.jpg --content "正文"
 ### Account
 
 ```bash
-xhs status                     # Quick login check
+xhs status                     # Quick saved-session check
 xhs whoami                     # Full profile info
 xhs whoami --json
 xhs login                      # Login

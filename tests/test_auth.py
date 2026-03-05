@@ -12,6 +12,7 @@ from xhs_cli.auth import (
     clear_cookies,
     cookie_str_to_dict,
     get_cookie_string,
+    get_saved_cookie_string,
     load_xsec_token,
     save_cookies,
     save_token_cache,
@@ -102,6 +103,13 @@ class TestSaveAndLoadCookies:
 
     def test_load_nonexistent(self, tmp_config_dir):
         assert get_cookie_string() is None
+
+    def test_get_saved_cookie_string(self, tmp_config_dir, sample_cookie_str):
+        save_cookies(sample_cookie_str)
+        loaded = get_saved_cookie_string()
+        assert loaded is not None
+        parsed = cookie_str_to_dict(loaded)
+        assert parsed["a1"] == "abc123"
 
 
 class TestClearCookies:

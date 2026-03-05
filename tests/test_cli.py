@@ -6,6 +6,7 @@ import pytest
 from click.testing import CliRunner
 
 import xhs_cli.cli as cli_module
+from xhs_cli import __version__
 from xhs_cli.cli import cli
 
 
@@ -19,7 +20,7 @@ class TestCliVersion:
         result = runner.invoke(cli, ["--version"])
         assert result.exit_code == 0
         assert "xhs-cli" in result.output
-        assert "0.1.0" in result.output
+        assert __version__ in result.output
 
 
 class TestCliHelp:
@@ -56,6 +57,17 @@ class TestStatusNotLoggedIn:
         assert result.exit_code == 1
         assert "Not logged in" in result.output
 
+    def test_status_uses_saved_cookie_only(self, runner, tmp_config_dir, monkeypatch):
+        monkeypatch.setattr(cli_module, "get_saved_cookie_string", lambda: "a1=abc")
+        monkeypatch.setattr(
+            cli_module,
+            "get_cookie_string",
+            lambda: pytest.fail("status should not trigger browser cookie extraction"),
+        )
+        result = runner.invoke(cli, ["status"])
+        assert result.exit_code == 0
+        assert "saved cookies" in result.output
+
 
 class TestLoginCookieValidation:
     def test_login_valid_cookie(self, runner, tmp_config_dir):
@@ -77,6 +89,35 @@ class TestLoginCookieValidation:
         result = runner.invoke(cli, ["login", "--cookie", ""])
         assert result.exit_code == 1
         assert "Invalid cookie" in result.output
+
+    def test_login_verify_transient_error_does_not_clear(self, runner, tmp_config_dir, monkeypatch):
+        monkeypatch.setattr(cli_module, "get_cookie_string", lambda: "a1=abc")
+        monkeypatch.setattr(cli_module, "_verify_cookies", lambda _cookie_dict: None)
+        monkeypatch.setattr(
+            cli_module,
+            "clear_cookies",
+            lambda: pytest.fail("clear_cookies should not be called on transient verify errors"),
+        )
+        monkeypatch.setattr(cli_module, "qrcode_login", lambda: "a1=new")
+
+        result = runner.invoke(cli, ["login"])
+        assert result.exit_code == 0
+        assert "Unable to verify cookies" in result.output
+
+    def test_login_verify_invalid_clears_stale_cookies(self, runner, tmp_config_dir, monkeypatch):
+        called = {"cleared": False}
+        monkeypatch.setattr(cli_module, "get_cookie_string", lambda: "a1=abc")
+        monkeypatch.setattr(cli_module, "_verify_cookies", lambda _cookie_dict: False)
+        monkeypatch.setattr(
+            cli_module,
+            "clear_cookies",
+            lambda: called.__setitem__("cleared", True) or ["cookies.json"],
+        )
+        monkeypatch.setattr(cli_module, "qrcode_login", lambda: "a1=new")
+
+        result = runner.invoke(cli, ["login"])
+        assert result.exit_code == 0
+        assert called["cleared"]
 
 
 class TestLogout:

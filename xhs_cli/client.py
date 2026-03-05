@@ -59,6 +59,20 @@ class XhsClient:
         self.close()
         return False
 
+    @staticmethod
+    def _is_publish_success(page_text: str, current_url: str) -> bool:
+        """Heuristic to determine whether publish action succeeded."""
+        success_indicators = [
+            "发布成功",
+            "已发布",
+            "publish-success",
+            "published",
+        ]
+        normalized = (page_text or "").lower()
+        if any(indicator.lower() in normalized for indicator in success_indicators):
+            return True
+        return "publish" not in (current_url or "").lower()
+
     def start(self):
         """Launch camoufox and inject cookies."""
         from camoufox.sync_api import Camoufox
@@ -158,7 +172,15 @@ class XhsClient:
         self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
         self._human_wait(1.5, 3)
 
-        self._wait_for_initial_state()
+        self._wait_for_data(
+            """() => {
+                const s = window.__INITIAL_STATE__;
+                return s && s.note && s.note.noteDetailMap
+                    && Object.keys(s.note.noteDetailMap).length > 0;
+            }""",
+            timeout=15.0,
+            desc="note.noteDetailMap",
+        )
 
         # Extract note detail
         for _attempt in range(3):
@@ -196,7 +218,14 @@ class XhsClient:
         self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
         self._human_wait(1.5, 3)
 
-        self._wait_for_initial_state()
+        self._wait_for_data(
+            """() => {
+                const s = window.__INITIAL_STATE__;
+                return s && s.user && (s.user.userPageData || s.user.userInfo);
+            }""",
+            timeout=15.0,
+            desc="user.userPageData",
+        )
 
         # Vue wraps values in reactive refs like {_value, dep, ...}
         # We need to unwrap _value recursively
@@ -235,7 +264,14 @@ class XhsClient:
         logger.info("Loading %s list for user %s", tab, user_id)
         self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
         self._human_wait(2, 3)
-        self._wait_for_initial_state()
+        self._wait_for_data(
+            """() => {
+                const s = window.__INITIAL_STATE__;
+                return s && s.user;
+            }""",
+            timeout=15.0,
+            desc="user (follow list)",
+        )
 
         result = self._page.evaluate(
             """(tab) => {
@@ -291,7 +327,18 @@ class XhsClient:
         self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
         self._human_wait(1.5, 3)
 
-        self._wait_for_initial_state()
+        self._wait_for_data(
+            """() => {
+                const s = window.__INITIAL_STATE__;
+                if (!s || !s.user) return false;
+                const n = s.user.notes;
+                if (!n) return false;
+                const d = n._rawValue || n._value || n.value || n;
+                return Array.isArray(d) ? d.length > 0 : (d && typeof d === 'object');
+            }""",
+            timeout=15.0,
+            desc="user.notes",
+        )
 
         # Extract notes list from user profile state.
         # Vue wraps arrays in reactive refs, so we unwrap _value recursively.
@@ -497,7 +544,14 @@ class XhsClient:
         logger.info("Loading favorites: %s", url)
         self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
         self._human_wait(2, 3)
-        self._wait_for_initial_state()
+        self._wait_for_data(
+            """() => {
+                const s = window.__INITIAL_STATE__;
+                return s && s.user;
+            }""",
+            timeout=15.0,
+            desc="user (favorites)",
+        )
 
         all_notes = []
         seen_ids = set()
@@ -674,24 +728,41 @@ class XhsClient:
 
         Must be called after get_note_detail on the same note.
         """
+        # Ensure we are on the expected note page before extracting comments.
+        expected_path = f"/explore/{note_id}"
+        if expected_path not in self._page.url:
+            self._navigate_to_note(note_id, xsec_token)
+
         # First get initial comments from __INITIAL_STATE__
-        comments_data = self._page.evaluate("""() => {
+        comments_data = self._page.evaluate("""(noteId) => {
             if (window.__INITIAL_STATE__ &&
                 window.__INITIAL_STATE__.note &&
                 window.__INITIAL_STATE__.note.noteDetailMap) {
                 const map = window.__INITIAL_STATE__.note.noteDetailMap;
-                const keys = Object.keys(map);
-                if (keys.length > 0) {
-                    const comments = map[keys[0]].comments;
-                    if (comments) {
+                const detail = map[noteId] || map[Object.keys(map)[0]];
+                if (detail) {
+                    const comments = detail.comments;
+                    if (comments !== undefined && comments !== null) {
                         return JSON.parse(JSON.stringify(comments));
                     }
                 }
             }
             return null;
-        }""")
+        }""", note_id)
 
-        return comments_data if comments_data else []
+        if not comments_data:
+            return []
+        if isinstance(comments_data, dict):
+            for key in ("comments", "list", "data", "items"):
+                value = comments_data.get(key)
+                if isinstance(value, list):
+                    comments_data = value
+                    break
+        if not isinstance(comments_data, list):
+            return []
+        if max_comments <= 0:
+            return comments_data
+        return comments_data[:max_comments]
 
     # ===== Like / Unlike =====
 
@@ -910,27 +981,17 @@ class XhsClient:
                 publish_btn.click()
                 self._human_wait(3, 5)
 
-                # Check for success indicators
-                # After publishing, the page usually redirects or shows a success message
-                success_indicators = [
-                    '发布成功',
-                    'publish-success',
-                    '已发布',
-                ]
                 page_text = self._page.text_content("body") or ""
-                for indicator in success_indicators:
-                    if indicator in page_text:
-                        logger.info("Note published successfully!")
-                        return True
-
-                # If URL changed away from publish page, likely success
                 current_url = self._page.url
-                if "publish" not in current_url:
-                    logger.info("Redirected to %s — likely published!", current_url)
+                if self._is_publish_success(page_text, current_url):
+                    logger.info("Note published successfully. Current URL: %s", current_url)
                     return True
 
-                logger.info("Publish button clicked, assuming success")
-                return True
+                logger.warning(
+                    "Publish button clicked but no success signal found. Current URL: %s",
+                    current_url,
+                )
+                return False
 
         raise RuntimeError(
             "Cannot find publish button on the page. "
@@ -946,7 +1007,15 @@ class XhsClient:
             url += f"?xsec_token={xsec_token}&xsec_source=pc_feed"
         self._page.goto(url, wait_until="domcontentloaded", timeout=20000)
         self._human_wait(1.5, 3)
-        self._wait_for_initial_state()
+        self._wait_for_data(
+            """() => {
+                const s = window.__INITIAL_STATE__;
+                return s && s.note && s.note.noteDetailMap
+                    && Object.keys(s.note.noteDetailMap).length > 0;
+            }""",
+            timeout=15.0,
+            desc="note (navigate)",
+        )
 
     def _get_interact_state(self, note_id: str) -> dict:
         """Get like/favorite state from __INITIAL_STATE__."""

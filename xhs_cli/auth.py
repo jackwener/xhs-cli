@@ -27,6 +27,14 @@ TOKEN_CACHE_FILE = CONFIG_DIR / "token_cache.json"
 REQUIRED_COOKIES = {"a1"}
 
 
+def get_saved_cookie_string() -> str | None:
+    """Load only saved cookies from local config file.
+
+    This helper never triggers browser extraction and has no write side effects.
+    """
+    return _load_saved_cookies()
+
+
 def get_cookie_string() -> str | None:
     """Try all auth methods in order. Returns cookie string or None."""
     # 1. Saved cookies

@@ -67,7 +67,8 @@ xhs login
 # Or provide cookie string manually
 xhs login --cookie "a1=xxx; web_session=yyy"
 
-# Quick login check (no browser needed)
+# Quick check for saved login session
+# (no browser needed, no browser-cookie extraction)
 xhs status
 
 # Show profile info
@@ -164,7 +165,7 @@ Uses [camoufox](https://github.com/daijro/camoufox) (anti-fingerprint Firefox) t
 
 ## How It Works
 
-1. **Authentication** — Cookies are extracted from your local Chrome via browser-cookie3. Falls back to QR code login if extraction fails.
+1. **Authentication** — First reads `~/.xhs-cli/cookies.json`; if missing, extracts cookies from local Chrome via browser-cookie3. Falls back to QR code login if extraction fails.
 2. **Browsing** — Each operation navigates to real pages using camoufox, making all traffic look like normal user browsing.
 3. **Data Extraction** — Structured data is pulled from `window.__INITIAL_STATE__`.
 4. **Token Caching** — After search/feed, `xsec_token` is auto-cached to `~/.xhs-cli/token_cache.json`.
@@ -201,6 +202,7 @@ All xhs-cli commands are available in OpenClaw after installation.
 ## Notes
 
 - Cookies are stored in `~/.xhs-cli/cookies.json` with `0600` permissions.
+- `xhs status` checks saved local cookies only and never triggers browser extraction.
 - Uses headless Firefox via camoufox — no browser window is shown.
 - First run requires downloading the camoufox browser (`python -m camoufox fetch`).
 - User profile lookup requires the internal user_id (hex format), not the Red ID.

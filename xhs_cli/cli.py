@@ -27,6 +27,7 @@ from .auth import (
     clear_cookies,
     cookie_str_to_dict,
     get_cookie_string,
+    get_saved_cookie_string,
     load_xsec_token,
     qrcode_login,
     save_token_cache,
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
     from .client import XhsClient
 
 console = Console()
+logger = logging.getLogger(__name__)
 
 
 def _setup_logging(verbose: bool):
@@ -97,13 +99,19 @@ def login(ctx: click.Context, qrcode: bool, cookie_str: str | None):
         if cookie:
             # Validate by actually loading the page and checking user data
             cookie_dict = cookie_str_to_dict(cookie)
-            if _verify_cookies(cookie_dict):
+            verify_result = _verify_cookies(cookie_dict)
+            if verify_result is True:
                 console.print("[green]✅ Logged in (from browser cookies)[/green]")
                 return
-            else:
+            if verify_result is False:
                 console.print("[yellow]⚠️  Found cookies but session is invalid/expired.[/yellow]")
                 # Clear stale cookies so they don't get reused
                 clear_cookies()
+            else:
+                console.print(
+                    "[yellow]⚠️  Unable to verify cookies due to a transient error. "
+                    "Keeping existing local session.[/yellow]"
+                )
 
     # QR code login
     console.print("[dim]Falling back to QR code login...[/dim]")
@@ -115,29 +123,41 @@ def login(ctx: click.Context, qrcode: bool, cookie_str: str | None):
         sys.exit(1)
 
 
-def _verify_cookies(cookie_dict: dict) -> bool:
+def _verify_cookies(cookie_dict: dict) -> bool | None:
     """Quick check: load homepage with cookies and see if we get a valid user.
 
-    Returns True if the session is valid (has a real user), False otherwise.
+    Returns:
+        True: session is valid.
+        False: session is clearly invalid/expired.
+        None: verification could not be completed (e.g. transient failures).
     """
     from .client import XhsClient
 
     try:
         with XhsClient(cookie_dict) as client:
             info = client.get_self_info()
+    except Exception as exc:
+        logger.warning("Cookie verification failed due to transient error: %s", exc)
+        return None
 
-        # Check if we got a real nickname (not "Unknown")
-        basic = info.get("basicInfo", info.get("basic_info", {}))
-        user_page = info.get("userPageData", {})
-        if user_page:
-            basic = user_page.get("basicInfo", user_page.get("basic_info", basic))
-        if not basic or not isinstance(basic, dict):
-            basic = info
+    if not isinstance(info, dict) or not info:
+        return None
 
-        nickname = basic.get("nickname", basic.get("nick_name", ""))
-        return bool(nickname and nickname != "Unknown")
-    except Exception:
-        return False
+    # Check if we got a real nickname (not "Unknown")
+    basic = info.get("basicInfo", info.get("basic_info", {}))
+    user_page = info.get("userPageData", {})
+    if user_page:
+        basic = user_page.get("basicInfo", user_page.get("basic_info", basic))
+    if not basic or not isinstance(basic, dict):
+        basic = info if isinstance(info, dict) else {}
+
+    nickname = basic.get("nickname", basic.get("nick_name", ""))
+    user_id = basic.get("userId", basic.get("user_id", basic.get("id", "")))
+    if nickname and nickname != "Unknown":
+        return True
+    if user_id:
+        return True
+    return False
 
 
 @cli.command()
@@ -153,16 +173,12 @@ def logout():
 @cli.command()
 def status():
     """Check login status (lightweight, no browser needed)."""
-    from .auth import COOKIE_FILE
-
-    cookie = get_cookie_string()
+    cookie = get_saved_cookie_string()
     if not cookie:
-        console.print("[red]❌ Not logged in. Run `xhs login` to authenticate.[/red]")
+        console.print("[red]❌ Not logged in. Run `xhs login` to create a saved session.[/red]")
         sys.exit(1)
 
-    # Check if cookie file exists (saved session)
-    source = "saved cookies" if COOKIE_FILE.exists() else "browser cookies"
-    console.print(f"[green]✅ Logged in[/green] [dim](from {source})[/dim]")
+    console.print("[green]✅ Logged in[/green] [dim](from saved cookies)[/dim]")
     console.print("[dim]Run `xhs whoami` to see your profile details.[/dim]")
 
 

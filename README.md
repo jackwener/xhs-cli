@@ -67,7 +67,7 @@ xhs login
 # 手动提供 cookie 字符串
 xhs login --cookie "a1=xxx; web_session=yyy"
 
-# 快速检查登录状态（不启动浏览器）
+# 快速检查已保存的登录状态（不启动浏览器，不读取浏览器 cookie）
 xhs status
 
 # 查看个人资料
@@ -164,7 +164,7 @@ CLI (click) → XhsClient (camoufox 浏览器)
 
 ## 工作原理
 
-1. **认证** — 通过 browser-cookie3 从本地 Chrome 提取 cookie，失败则 fallback 到扫码登录。
+1. **认证** — 优先读取 `~/.xhs-cli/cookies.json`；未命中时通过 browser-cookie3 从本地 Chrome 提取 cookie，失败则 fallback 到扫码登录。
 2. **浏览** — 使用 camoufox 导航到真实页面，所有流量与正常用户浏览一致。
 3. **数据提取** — 从 `window.__INITIAL_STATE__` 提取结构化数据。
 4. **Token 缓存** — 搜索/Feed 后 `xsec_token` 自动缓存到 `~/.xhs-cli/token_cache.json`。
@@ -201,6 +201,7 @@ clawhub install xiaohongshu-cli
 ## 注意事项
 
 - Cookie 存储在 `~/.xhs-cli/cookies.json`，权限 `0600`。
+- `xhs status` 只检查本地已保存 cookie，不会触发浏览器 cookie 提取。
 - 使用 headless Firefox，不会弹出浏览器窗口。
 - 首次运行需下载 camoufox 浏览器（`python -m camoufox fetch`）。
 - 用户资料查询需要内部 user_id（十六进制），不是小红书号。
