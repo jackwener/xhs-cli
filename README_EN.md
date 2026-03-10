@@ -43,7 +43,10 @@ A command-line tool for [Xiaohongshu (小红书)](https://www.xiaohongshu.com) �
 Requires Python 3.8+.
 
 ```bash
-# Recommended: using uv
+# Recommended: using Homebrew (macOS)
+brew install jackwener/xhs/xhs-cli
+
+# Using uv
 uv tool install xhs-cli
 
 # Or using pipx

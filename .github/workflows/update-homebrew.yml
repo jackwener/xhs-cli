@@ -1,0 +1,71 @@
+name: Update Homebrew Formula
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  update-formula:
+    name: Update Homebrew formula
+    needs: []
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for PyPI to be available
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "Waiting for xhs-cli==$VERSION on PyPI..."
+          for i in $(seq 1 30); do
+            if curl -sf "https://pypi.org/pypi/xhs-cli/$VERSION/json" > /dev/null 2>&1; then
+              echo "Package available on PyPI"
+              break
+            fi
+            echo "Attempt $i/30 - not yet available, waiting 30s..."
+            sleep 30
+          done
+
+      - name: Get PyPI release info
+        id: pypi
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          JSON=$(curl -sf "https://pypi.org/pypi/xhs-cli/$VERSION/json")
+          SDIST_URL=$(echo "$JSON" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          for u in data['urls']:
+              if u['packagetype'] == 'sdist':
+                  print(u['url'])
+                  break
+          ")
+          SDIST_SHA=$(echo "$JSON" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          for u in data['urls']:
+              if u['packagetype'] == 'sdist':
+                  print(u['digests']['sha256'])
+                  break
+          ")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "url=$SDIST_URL" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SDIST_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Update formula
+        run: |
+          VERSION="${{ steps.pypi.outputs.version }}"
+          URL="${{ steps.pypi.outputs.url }}"
+          SHA256="${{ steps.pypi.outputs.sha256 }}"
+
+          sed -i "s|url \"https://files.pythonhosted.org/.*\"|url \"$URL\"|" Formula/xhs-cli.rb
+          sed -i "s|sha256 \"[a-f0-9]*\"|sha256 \"$SHA256\"|" Formula/xhs-cli.rb
+          sed -i "s|xhs-cli==[0-9.]*|xhs-cli==$VERSION|" Formula/xhs-cli.rb
+
+      - name: Commit and push
+        run: |
+          VERSION="${{ steps.pypi.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/xhs-cli.rb
+          git commit -m "brew: update xhs-cli to $VERSION" || exit 0
+          git push origin HEAD:main
