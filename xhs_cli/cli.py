@@ -42,6 +42,28 @@ console = Console()
 logger = logging.getLogger(__name__)
 
 
+def _prog_name() -> str:
+    """Return the CLI program name as the user actually typed it.
+
+    Inspects the Click context first (if available), then falls back to
+    ``os.path.basename(sys.argv[0])``.  This ensures hint messages like
+    ``Use `<prog> read <Note ID>` …`` match however the user invoked the
+    CLI (e.g. ``xhs``, ``python -m xhs_cli``, ``uvx --from xhs-cli xhs``).
+    """
+    import os
+
+    try:
+        ctx = click.get_current_context(silent=True)
+        if ctx:
+            root = ctx.find_root()
+            if root.info_name:
+                return root.info_name
+    except RuntimeError:
+        pass
+    argv0 = sys.argv[0] if sys.argv else "xhs"
+    return os.path.basename(argv0)
+
+
 def _setup_logging(verbose: bool):
     level = logging.DEBUG if verbose else logging.WARNING
     logging.basicConfig(
@@ -79,7 +101,7 @@ def _get_client() -> Iterator[XhsClient]:
 
     cookie = get_cookie_string()
     if not cookie:
-        console.print("[red]Not logged in. Run `xhs login` first.[/red]")
+        console.print(f"[red]Not logged in. Run `{_prog_name()} login` first.[/red]")
         sys.exit(1)
 
     cookie_dict = cookie_str_to_dict(cookie)
@@ -250,11 +272,11 @@ def status():
     """Check login status (lightweight, no browser needed)."""
     cookie = get_saved_cookie_string()
     if not cookie:
-        console.print("[red]❌ Not logged in. Run `xhs login` to create a saved session.[/red]")
+        console.print(f"[red]❌ Not logged in. Run `{_prog_name()} login` to create a saved session.[/red]")
         sys.exit(1)
 
     console.print("[green]✅ Logged in[/green] [dim](from saved cookies)[/dim]")
-    console.print("[dim]Run `xhs whoami` to see your profile details.[/dim]")
+    console.print(f"[dim]Run `{_prog_name()} whoami` to see your profile details.[/dim]")
 
 
 @cli.command()
@@ -300,7 +322,7 @@ def whoami(as_json: bool):
             if not nickname and not user_id:
                 console.print(
                     "[red]❌ Session expired or invalid. "
-                    "Run `xhs login` to re-authenticate.[/red]"
+                    f"Run `{_prog_name()} login` to re-authenticate.[/red]"
                 )
                 sys.exit(1)
 
@@ -425,7 +447,7 @@ def search(keyword: str, as_json: bool):
             console.print(table)
             # xsec_token is cached automatically, no need to show it in the table
             console.print(
-                "\n[dim]Use `xhs read <Note ID>` to view details "
+                f"\n[dim]Use `{_prog_name()} read <Note ID>` to view details "
                 "(xsec_token auto-resolved)[/dim]"
             )
 
@@ -571,7 +593,7 @@ def user_posts(user_id: str, as_json: bool):
                 save_token_cache(token_map)
 
             console.print(table)
-            console.print("\n[dim]Use `xhs read <Note ID>` to view details[/dim]")
+            console.print(f"\n[dim]Use `{_prog_name()} read <Note ID>` to view details[/dim]")
 
     except Exception as e:
         console.print(f"[red]❌ Failed to get user posts: {e}[/red]")
@@ -708,7 +730,7 @@ def feed(as_json: bool):
                 )
 
             console.print(table)
-            console.print("\n[dim]Use `xhs read <Note ID>` to view details[/dim]")
+            console.print(f"\n[dim]Use `{_prog_name()} read <Note ID>` to view details[/dim]")
 
     except Exception as e:
         console.print(f"[red]❌ Failed to get feed: {e}[/red]")
@@ -939,7 +961,7 @@ def favorites(max_count: int, as_json: bool):
                 table.add_row(str(i), f"{type_icon} {title}", author, str(likes), nid)
 
             console.print(table)
-            console.print("\nUse `xhs read <Note ID>` to view details")
+            console.print(f"\nUse `{_prog_name()} read <Note ID>` to view details")
 
     except Exception as e:
         console.print(f"[red]❌ Failed to get favorites: {e}[/red]")
