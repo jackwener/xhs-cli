@@ -46,7 +46,10 @@
 需要 Python 3.8+。
 
 ```bash
-# 推荐：使用 uv
+# 推荐：使用 Homebrew (macOS)
+brew install jackwener/xhs/xhs-cli
+
+# 使用 uv
 uv tool install xhs-cli
 
 # 或使用 pipx
