@@ -187,6 +187,10 @@ xhs favorites --max 10
 ```bash
 xhs post "标题" --image photo1.jpg --image photo2.jpg --content "正文内容"
 xhs post "标题" --image photo1.jpg --content "正文内容" --json
+
+# 真实 Chrome 会话发布（适合 creator 会话无法被 cookie 注入复用时）
+xhs post-real "标题" --image photo1.jpg --content "正文内容"
+xhs post-real "标题" --image photo1.jpg --content "正文内容" --cdp-url http://127.0.0.1:9222
 ```
 
 ### 其他
@@ -252,6 +256,9 @@ git clone git@github.com:jackwener/xhs-cli.git .agents/skills/xhs-cli
 - `xhs login --cookie` 要求 cookie 至少包含 `a1` 和 `web_session`。
 - 登录后会自动做可用性探活；若会话仍为 guest/风控受限，会提示重新登录。
 - `xhs post` 可能要求额外登录创作平台（`https://creator.xiaohongshu.com`）。
+- 如果 `xhs post` 提示 creator 登录，但你在真实 Chrome 已登录，可改用 `xhs post-real`。
+- `xhs post-real` 需要先把真实 Chrome 以远程调试模式启动，例如：
+  `/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --profile-directory=Default`
 - 使用 headless Firefox，不会弹出浏览器窗口。
 - 首次运行需下载 camoufox 浏览器（`python -m camoufox fetch`）。
 - 用户资料查询需要内部 user_id（十六进制），不是小红书号。

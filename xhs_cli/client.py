@@ -15,6 +15,8 @@ from .exceptions import DataFetchError, LoginError
 
 logger = logging.getLogger(__name__)
 
+CREATOR_PUBLISH_URL = "https://creator.xiaohongshu.com/publish/publish"
+
 # Shared JavaScript function to unwrap Vue reactive refs from __INITIAL_STATE__.
 # Vue wraps values in reactive Proxy objects with _value/dep structure.
 UNWRAP_JS = """
@@ -155,6 +157,30 @@ class XhsClient:
             self._browser = None
             self._page = None
             logger.info("Browser closed.")
+
+    def probe_creator_publish_access(self) -> bool | None:
+        """Check whether the current session can access the creator publish page."""
+        if not self._page:
+            raise RuntimeError("Browser not started")
+
+        try:
+            self._goto(
+                CREATOR_PUBLISH_URL,
+                timeout=30000,
+                wait_min=1,
+                wait_max=2,
+                context="loading creator publish page",
+            )
+        except LoginError:
+            return False
+        except Exception as exc:
+            logger.warning("Creator publish access probe failed due to transient error: %s", exc)
+            return None
+
+        current_url = (self._page.url or "").lower()
+        if "creator.xiaohongshu.com/login" in current_url or "redirectreason=401" in current_url:
+            return False
+        return current_url.startswith("https://creator.xiaohongshu.com/")
 
     # ===== Search =====
 
@@ -734,7 +760,7 @@ class XhsClient:
         """
         self._goto(
             "https://www.xiaohongshu.com",
-            timeout=15000,
+            timeout=30000,
             wait_min=1,
             wait_max=2,
             context="loading homepage for self info",
@@ -1006,7 +1032,7 @@ class XhsClient:
             if not os.path.isfile(path):
                 raise FileNotFoundError(f"Image not found: {path}")
 
-        publish_url = "https://creator.xiaohongshu.com/publish/publish"
+        publish_url = CREATOR_PUBLISH_URL
         logger.info("Navigating to publish page: %s", publish_url)
         self._goto(
             publish_url,
@@ -1438,10 +1464,35 @@ class XhsClient:
         wait_max: float = 2.0,
         context: str = "loading page",
     ):
-        """Navigate to URL and fail fast if redirected to risk-control pages."""
-        self._page.goto(url, wait_until=wait_until, timeout=timeout)
+        """Navigate to URL and fail fast if redirected to risk-control pages.
+
+        Xiaohongshu sometimes streams enough HTML to be usable before
+        Playwright observes the requested load milestone. When that happens,
+        keep the partially loaded page if we can still hydrate
+        `window.__INITIAL_STATE__` from inline HTML.
+        """
+        nav_error = None
+        try:
+            self._page.goto(url, wait_until=wait_until, timeout=timeout)
+        except Exception as exc:
+            nav_error = exc
         self._human_wait(wait_min, wait_max)
         self._raise_if_blocked(context, include_body=True)
+        hydrated = self._hydrate_initial_state_from_html()
+        if nav_error:
+            has_body = False
+            try:
+                has_body = bool((self._page.text_content("body") or "").strip())
+            except Exception:
+                pass
+            if hydrated or has_body:
+                logger.warning(
+                    "Page.goto timed out while %s; continuing with partially loaded page at %s",
+                    context,
+                    getattr(self._page, "url", url),
+                )
+                return
+            raise nav_error
 
     def _detect_block_reason(self, include_body: bool = False) -> str:
         """Detect whether current page is a security verification/risk-control page."""
@@ -1498,6 +1549,8 @@ class XhsClient:
                 )
                 if result:
                     return
+                if self._hydrate_initial_state_from_html():
+                    return
                 self._raise_if_blocked("waiting for initial state", include_body=False)
             except LoginError:
                 raise
@@ -1524,6 +1577,11 @@ class XhsClient:
                 if self._page.evaluate(js_condition):
                     logger.debug("%s ready after %.1fs", desc, time.time() - start)
                     return
+                if self._hydrate_initial_state_from_html() and self._page.evaluate(js_condition):
+                    logger.debug(
+                        "%s hydrated from inline HTML after %.1fs", desc, time.time() - start
+                    )
+                    return
                 self._raise_if_blocked(f"waiting for {desc}", include_body=False)
             except LoginError:
                 raise
@@ -1538,3 +1596,57 @@ class XhsClient:
     def _human_wait(self, min_sec: float = 1.0, max_sec: float = 3.0):
         """Wait a random human-like interval."""
         time.sleep(random.uniform(min_sec, max_sec))
+
+    def _hydrate_initial_state_from_html(self) -> bool:
+        """Best-effort recovery when inline state exists in HTML but not on window.
+
+        Xiaohongshu sometimes ships `window.__INITIAL_STATE__=...` inside an inline
+        `<script>` tag, but the variable is unavailable by the time Playwright
+        evaluates the page. Replaying that inline assignment restores the same
+        state object and lets existing extraction paths keep working.
+        """
+        if not self._page:
+            return False
+
+        try:
+            if self._page.evaluate(
+                "() => window.__INITIAL_STATE__ !== undefined && window.__INITIAL_STATE__ !== null"
+            ):
+                return True
+        except Exception:
+            pass
+
+        try:
+            html = self._page.content()
+        except Exception:
+            return False
+
+        match = re.search(
+            r"<script>\s*(window\.__INITIAL_STATE__\s*=\s*[\s\S]*?)</script>",
+            html,
+            flags=re.S,
+        )
+        if not match:
+            return False
+
+        script = match.group(1).strip()
+        try:
+            hydrated = self._page.evaluate(
+                """(scriptText) => {
+                    if (window.__INITIAL_STATE__ !== undefined &&
+                        window.__INITIAL_STATE__ !== null) {
+                        return true;
+                    }
+                    eval(scriptText);
+                    return window.__INITIAL_STATE__ !== undefined &&
+                           window.__INITIAL_STATE__ !== null;
+                }""",
+                script,
+            )
+        except Exception:
+            return False
+
+        if hydrated:
+            logger.debug("Hydrated window.__INITIAL_STATE__ from inline HTML script")
+            return True
+        return False

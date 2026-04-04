@@ -11,6 +11,7 @@ import xhs_cli.cli as cli_module
 from xhs_cli import __version__
 from xhs_cli.cli import cli
 from xhs_cli.exceptions import DataFetchError
+from xhs_cli.real_chrome import build_cdp_launch_help
 
 
 @pytest.fixture
@@ -48,6 +49,11 @@ class TestCliHelp:
         assert "--image" in result.output
         assert "--content" in result.output
         assert "--json" in result.output
+
+    def test_post_real_help(self, runner):
+        result = runner.invoke(cli, ["post-real", "--help"])
+        assert result.exit_code == 0
+        assert "--cdp-url" in result.output
 
     def test_favorites_help(self, runner):
         result = runner.invoke(cli, ["favorites", "--help"])
@@ -289,6 +295,39 @@ class TestProbeSessionUsability:
         assert cli_module._probe_session_usability({"a1": "x", "web_session": "y"}) is None
 
 
+class _FakeCreatorProbeClient:
+    def __init__(self, result=None, should_raise=False):
+        self._result = result
+        self._should_raise = should_raise
+
+    def __enter__(self):
+        if self._should_raise:
+            raise RuntimeError("boom")
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def probe_creator_publish_access(self):
+        return self._result
+
+
+class TestProbeCreatorPublishAccess:
+    def test_probe_creator_success(self, monkeypatch):
+        monkeypatch.setattr(
+            "xhs_cli.client.XhsClient",
+            lambda _cookie_dict: _FakeCreatorProbeClient(result=True),
+        )
+        assert cli_module._probe_creator_publish_access({"a1": "x", "web_session": "y"}) is True
+
+    def test_probe_creator_transient_error(self, monkeypatch):
+        monkeypatch.setattr(
+            "xhs_cli.client.XhsClient",
+            lambda _cookie_dict: _FakeCreatorProbeClient(should_raise=True),
+        )
+        assert cli_module._probe_creator_publish_access({"a1": "x", "web_session": "y"}) is None
+
+
 class _FakeDataClient:
     def search_notes(self, _keyword):
         return [
@@ -326,3 +365,74 @@ class TestCliRobustness:
         result = runner.invoke(cli, ["followers", "u123"])
         assert result.exit_code == 0
         assert "Followers" in result.output
+
+
+class _FakePostClient:
+    def __init__(self, creator_result=True, publish_result=None):
+        self.creator_result = creator_result
+        self.publish_result = publish_result if publish_result is not None else {
+            "success": True,
+            "note_id": "n123",
+        }
+        self.publish_called = False
+
+    def probe_creator_publish_access(self):
+        return self.creator_result
+
+    def publish_note(self, **_kwargs):
+        self.publish_called = True
+        return self.publish_result
+
+
+class TestPostCommand:
+    def test_post_blocks_early_when_creator_access_missing(self, runner, tmp_path, monkeypatch):
+        image = tmp_path / "cover.jpg"
+        image.write_bytes(b"jpg")
+        fake_client = _FakePostClient(creator_result=False)
+        monkeypatch.setattr(cli_module, "_get_client", lambda: _fake_client_ctx(fake_client))
+
+        result = runner.invoke(
+            cli,
+            ["post", "标题", "--image", str(image), "--content", "正文"],
+        )
+
+        assert result.exit_code == 1
+        assert "creator.xiaohongshu.com/login" in result.output
+        assert fake_client.publish_called is False
+
+    def test_post_json_reports_creator_login_required(self, runner, tmp_path, monkeypatch):
+        image = tmp_path / "cover.jpg"
+        image.write_bytes(b"jpg")
+        fake_client = _FakePostClient(creator_result=False)
+        monkeypatch.setattr(cli_module, "_get_client", lambda: _fake_client_ctx(fake_client))
+
+        result = runner.invoke(
+            cli,
+            ["post", "标题", "--image", str(image), "--content", "正文", "--json"],
+        )
+
+        assert result.exit_code == 1
+        assert '"error": "creator_login_required"' in result.output
+        assert fake_client.publish_called is False
+
+
+class TestPostRealCommand:
+    def test_post_real_reports_cdp_connection_help(self, runner, tmp_path, monkeypatch):
+        image = tmp_path / "cover.jpg"
+        image.write_bytes(b"jpg")
+
+        @contextmanager
+        def _fake_real_client(_cdp_url):
+            raise RuntimeError(build_cdp_launch_help("http://127.0.0.1:9222"))
+            yield  # pragma: no cover
+
+        monkeypatch.setattr(cli_module, "get_real_chrome_client", _fake_real_client)
+
+        result = runner.invoke(
+            cli,
+            ["post-real", "标题", "--image", str(image), "--content", "正文"],
+        )
+
+        assert result.exit_code == 1
+        assert "Cannot connect to real Chrome" in result.output
+        assert "--remote-debugging-port=9222" in result.output

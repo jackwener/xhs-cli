@@ -44,6 +44,48 @@ class _FakeWaitPage:
         return self._body
 
 
+class _FakeHydratePage:
+    def __init__(self, html: str, url: str = "https://www.xiaohongshu.com/explore"):
+        self.url = url
+        self._html = html
+        self._hydrated = False
+
+    def evaluate(self, script, *args):
+        if args and "eval(scriptText)" in script:
+            self._hydrated = True
+            return True
+        if "window.__INITIAL_STATE__ !== undefined && window.__INITIAL_STATE__ !== null" in script:
+            if args:
+                self._hydrated = True
+                return True
+            return self._hydrated
+        if "window.__INITIAL_STATE__ !== undefined" in script:
+            return self._hydrated
+        if "window.__INITIAL_STATE__" in script:
+            return self._hydrated
+        return False
+
+    def content(self):
+        return self._html
+
+    def text_content(self, _selector):
+        return ""
+
+
+class _FakeGotoPage:
+    def __init__(self, url: str):
+        self.url = url
+
+    def goto(self, url, *_args, **_kwargs):
+        self.url = url
+
+    def text_content(self, _selector):
+        return ""
+
+    def evaluate(self, _script, *_args):
+        return False
+
+
 class TestGetNoteComments:
     def test_extracts_note_comments_and_applies_max_limit(self):
         client = XhsClient({})
@@ -115,6 +157,37 @@ class TestPublishResultHeuristic:
         assert note_id == "xyz987"
 
 
+class TestCreatorPublishAccessProbe:
+    def test_probe_returns_false_after_creator_login_redirect(self, monkeypatch):
+        client = XhsClient({})
+        client._page = _FakeGotoPage(
+            "https://www.xiaohongshu.com/explore"
+        )
+
+        def _fake_goto(*_args, **_kwargs):
+            client._page.url = (
+                "https://creator.xiaohongshu.com/login"
+                "?source=&redirectReason=401&lastUrl=%252Fpublish%252Fpublish"
+            )
+
+        monkeypatch.setattr(client, "_goto", _fake_goto)
+
+        assert client.probe_creator_publish_access() is False
+
+    def test_probe_returns_true_when_publish_page_is_accessible(self, monkeypatch):
+        client = XhsClient({})
+        client._page = _FakeGotoPage("https://www.xiaohongshu.com/explore")
+        monkeypatch.setattr(
+            client,
+            "_goto",
+            lambda *_args, **_kwargs: setattr(
+                client._page, "url", "https://creator.xiaohongshu.com/publish/publish"
+            ),
+        )
+
+        assert client.probe_creator_publish_access() is True
+
+
 class TestGetUserInfoFallback:
     def test_returns_unwrapped_user_object_when_key_fields_missing(self, monkeypatch):
         client = XhsClient({})
@@ -167,3 +240,23 @@ class TestWaitForData:
                 desc="user profile",
                 raise_on_timeout=True,
             )
+
+    def test_wait_for_data_hydrates_initial_state_from_inline_html(self, monkeypatch):
+        client = XhsClient({})
+        client._page = _FakeHydratePage(
+            '<html><body><script>window.__INITIAL_STATE__={"feed":{"feeds":[{"id":"n1"}]}}</script></body></html>'
+        )
+        monkeypatch.setattr("xhs_cli.client.time.sleep", lambda *_args, **_kwargs: None)
+
+        client._wait_for_data(
+            "() => !!window.__INITIAL_STATE__",
+            timeout=0.5,
+            desc="feed.feeds",
+            raise_on_timeout=True,
+        )
+
+    def test_hydrate_initial_state_returns_false_when_no_inline_state(self):
+        client = XhsClient({})
+        client._page = _FakeHydratePage("<html><body><div>no state</div></body></html>")
+
+        assert client._hydrate_initial_state_from_html() is False

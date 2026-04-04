@@ -33,7 +33,8 @@ from .auth import (
     qrcode_login,
     save_token_cache,
 )
-from .exceptions import DataFetchError
+from .exceptions import DataFetchError, LoginError
+from .real_chrome import DEFAULT_CHROME_CDP_URL, get_real_chrome_client
 
 if TYPE_CHECKING:
     from .client import XhsClient
@@ -129,7 +130,15 @@ def login(ctx: click.Context, qrcode: bool, cookie_str: str | None):
             if verify_result is True:
                 probe_result = _probe_session_usability(cookie_dict)
                 if probe_result is True:
-                    console.print("[green]✅ Logged in (from browser cookies)[/green]")
+                    console.print("[green]✅ Logged in (main site session available)[/green]")
+                    creator_result = _probe_creator_publish_access(cookie_dict)
+                    if creator_result is False:
+                        _print_creator_publish_warning()
+                    elif creator_result is None:
+                        console.print(
+                            "[yellow]⚠️  Unable to confirm creator publish access. "
+                            "Feed/search work, but `xhs post` may still fail.[/yellow]"
+                        )
                     return
                 if probe_result is False:
                     console.print(
@@ -168,6 +177,14 @@ def login(ctx: click.Context, qrcode: bool, cookie_str: str | None):
             )
             sys.exit(1)
         console.print("[green]✅ Login successful! Cookie saved.[/green]")
+        creator_result = _probe_creator_publish_access(cookie_dict)
+        if creator_result is False:
+            _print_creator_publish_warning()
+        elif creator_result is None:
+            console.print(
+                "[yellow]⚠️  Unable to confirm creator publish access. "
+                "Main site login succeeded, but `xhs post` may still fail.[/yellow]"
+            )
     except Exception as e:
         console.print(f"[red]❌ Login failed: {e}[/red]")
         sys.exit(1)
@@ -233,6 +250,100 @@ def _probe_session_usability(cookie_dict: dict) -> bool | None:
     if isinstance(feeds, list):
         return True
     return False
+
+
+def _probe_creator_publish_access(cookie_dict: dict) -> bool | None:
+    """Probe whether session can access creator publish page."""
+    from .client import XhsClient
+
+    try:
+        with XhsClient(cookie_dict) as client:
+            return client.probe_creator_publish_access()
+    except Exception as exc:
+        logger.warning("Creator publish probe failed due to transient error: %s", exc)
+        return None
+
+
+def _print_creator_publish_warning():
+    """Explain why posting can still fail even if the main site is logged in."""
+    console.print(
+        "[yellow]⚠️  Main site session is available, but creator publish access is not. "
+        "`xhs post` will fail if browser automation is redirected to "
+        "`creator.xiaohongshu.com/login`.[/yellow]"
+    )
+
+
+def _publish_note_with_client(
+    client,
+    *,
+    title: str,
+    abs_paths: list[str],
+    content: str,
+    as_json: bool,
+):
+    """Run publish flow with a prepared client."""
+    creator_result = client.probe_creator_publish_access()
+    if creator_result is False:
+        message = (
+            "Main site session is logged in, but the automated browser was redirected "
+            "to creator.xiaohongshu.com/login. Publishing requires a creator session "
+            "that browser automation can reuse."
+        )
+        if as_json:
+            click.echo(
+                json.dumps(
+                    {
+                        "success": False,
+                        "note_id": "",
+                        "error": "creator_login_required",
+                        "message": message,
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
+        else:
+            console.print(f"[red]❌ Publish blocked: {message}[/red]")
+        sys.exit(1)
+    if creator_result is None:
+        console.print(
+            "[yellow]⚠️  Unable to confirm creator publish access. "
+            "Attempting publish anyway...[/yellow]"
+        )
+
+    result = client.publish_note(
+        title=title,
+        image_paths=abs_paths,
+        content=content,
+        return_detail=True,
+    )
+    if isinstance(result, dict):
+        ok = bool(result.get("success", False))
+        note_id = str(result.get("note_id", ""))
+    else:
+        ok = bool(result)
+        note_id = ""
+
+    if as_json:
+        click.echo(
+            json.dumps(
+                {"success": ok, "note_id": note_id},
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        if not ok:
+            sys.exit(1)
+        return
+
+    if ok:
+        if note_id:
+            console.print(f"[green]✅ Note published successfully! Note ID: {note_id}[/green]")
+        else:
+            console.print("[green]✅ Note published successfully![/green]")
+    else:
+        console.print("[red]❌ Publish may have failed. Check your profile.[/red]")
+        sys.exit(1)
 
 
 @cli.command()
@@ -972,46 +1083,75 @@ def post(title: str, images: tuple[str, ...], content: str, as_json: bool):
 
     try:
         with _get_client() as client:
-            result = client.publish_note(
+            _publish_note_with_client(
+                client,
                 title=title,
-                image_paths=abs_paths,
+                abs_paths=abs_paths,
                 content=content,
-                return_detail=True,
+                as_json=as_json,
             )
-            if isinstance(result, dict):
-                ok = bool(result.get("success", False))
-                note_id = str(result.get("note_id", ""))
-            else:
-                ok = bool(result)
-                note_id = ""
-
-            if as_json:
-                click.echo(
-                    json.dumps(
-                        {"success": ok, "note_id": note_id},
-                        indent=2,
-                        ensure_ascii=False,
-                    )
-                )
-                if not ok:
-                    sys.exit(1)
-                return
-
-            if ok:
-                if note_id:
-                    console.print(
-                        f"[green]✅ Note published successfully! Note ID: {note_id}[/green]"
-                    )
-                else:
-                    console.print("[green]✅ Note published successfully![/green]")
-            else:
-                console.print("[red]❌ Publish may have failed. Check your profile.[/red]")
-                sys.exit(1)
     except FileNotFoundError as e:
         console.print(f"[red]❌ {e}[/red]")
         sys.exit(1)
+    except LoginError:
+        console.print(
+            "[red]❌ Publish failed: creator publish session is unavailable in the "
+            "automated browser. If you are already logged in in Chrome, the creator "
+            "session may still be non-reusable by automation.[/red]"
+        )
+        sys.exit(1)
     except Exception as e:
         console.print(f"[red]❌ Publish failed: {e}[/red]")
+        sys.exit(1)
+
+
+@cli.command("post-real")
+@click.argument("title")
+@click.option("--image", "images", multiple=True, required=True,
+              type=click.Path(exists=True), help="Image file to upload (can be repeated)")
+@click.option("--content", default="", help="Note body/description text")
+@click.option("--json", "as_json", is_flag=True, help="Output publish result JSON")
+@click.option(
+    "--cdp-url",
+    default=DEFAULT_CHROME_CDP_URL,
+    show_default=True,
+    help="Chrome DevTools endpoint for your real logged-in Chrome session.",
+)
+def post_real(title: str, images: tuple[str, ...], content: str, as_json: bool, cdp_url: str):
+    """Publish a new image note via a real Chrome session connected over CDP.
+
+    This reuses a real Chrome profile/session instead of the default camoufox browser.
+    """
+    import os
+
+    abs_paths = [os.path.abspath(p) for p in images]
+
+    console.print(f"[dim]Publishing via real Chrome: {title}[/dim]")
+    console.print(f"[dim]Images: {', '.join(os.path.basename(p) for p in abs_paths)}[/dim]")
+    console.print(f"[dim]CDP: {cdp_url}[/dim]")
+    if content:
+        console.print(f"[dim]Content: {content[:50]}{'...' if len(content) > 50 else ''}[/dim]")
+
+    try:
+        with get_real_chrome_client(cdp_url) as client:
+            _publish_note_with_client(
+                client,
+                title=title,
+                abs_paths=abs_paths,
+                content=content,
+                as_json=as_json,
+            )
+    except FileNotFoundError as e:
+        console.print(f"[red]❌ {e}[/red]")
+        sys.exit(1)
+    except LoginError:
+        console.print(
+            "[red]❌ Real Chrome publish failed: the connected Chrome session still hit "
+            "creator login / verification while publishing.[/red]"
+        )
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]❌ Real Chrome publish failed: {e}[/red]")
         sys.exit(1)
 
 

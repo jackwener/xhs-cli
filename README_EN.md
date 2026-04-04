@@ -186,6 +186,10 @@ xhs favorites --max 10
 ```bash
 xhs post "Title" --image photo1.jpg --image photo2.jpg --content "Body text"
 xhs post "Title" --image photo1.jpg --content "Body text" --json
+
+# Publish through a real Chrome session (when creator login cannot be reused via injected cookies)
+xhs post-real "Title" --image photo1.jpg --content "Body text"
+xhs post-real "Title" --image photo1.jpg --content "Body text" --cdp-url http://127.0.0.1:9222
 ```
 
 ### Other
@@ -250,6 +254,9 @@ All xhs-cli commands are available in OpenClaw after installation.
 - `xhs login --cookie` requires at least `a1` and `web_session`.
 - Login runs a usability probe; guest/risk-limited sessions are treated as invalid and require re-login.
 - `xhs post` may require an extra creator-platform login at `https://creator.xiaohongshu.com`.
+- If `xhs post` says creator login is required but your real Chrome is already logged in, try `xhs post-real`.
+- `xhs post-real` requires real Chrome to be started with remote debugging enabled, for example:
+  `/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --profile-directory=Default`
 - Uses headless Firefox via camoufox — no browser window is shown.
 - First run requires downloading the camoufox browser (`python -m camoufox fetch`).
 - User profile lookup requires the internal user_id (hex format), not the Red ID.
