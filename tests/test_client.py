@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from xhs_cli.client import XhsClient
 from xhs_cli.exceptions import DataFetchError, LoginError
@@ -44,35 +45,144 @@ class _FakeWaitPage:
         return self._body
 
 
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class _FakeExpectContext:
+    def __init__(self, page):
+        self._page = page
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        if self._page.raise_timeout:
+            raise PlaywrightTimeoutError("no response")
+        return False
+
+    @property
+    def value(self):
+        return _FakeResponse(self._page.payload)
+
+
+class _FakeCapturePage:
+    """Minimal page that drives _navigate_and_capture without a real browser."""
+
+    def __init__(self, url, payload=None, raise_timeout=False):
+        self.url = url
+        self.payload = payload
+        self.raise_timeout = raise_timeout
+
+    def expect_response(self, _predicate, timeout=0):
+        return _FakeExpectContext(self)
+
+    def goto(self, *_args, **_kwargs):
+        return None
+
+    def mouse_wheel(self, *_args, **_kwargs):
+        return None
+
+    @property
+    def mouse(self):
+        page = self
+
+        class _Mouse:
+            def wheel(self, *_a, **_k):
+                return None
+
+        return _Mouse()
+
+    def text_content(self, _selector):
+        return ""
+
+
+def _no_wait(client, monkeypatch):
+    monkeypatch.setattr(client, "_human_wait", lambda *_a, **_k: None)
+
+
+class TestNavigateAndCapture:
+    def test_returns_json_body_on_success(self, monkeypatch):
+        client = XhsClient({})
+        client._page = _FakeCapturePage(
+            "https://www.xiaohongshu.com/explore", payload={"ok": 1}
+        )
+        _no_wait(client, monkeypatch)
+        assert client._navigate_and_capture("u", "/api/x") == {"ok": 1}
+
+    def test_raises_data_fetch_error_on_timeout(self, monkeypatch):
+        client = XhsClient({})
+        client._page = _FakeCapturePage(
+            "https://www.xiaohongshu.com/explore", raise_timeout=True
+        )
+        _no_wait(client, monkeypatch)
+        with pytest.raises(DataFetchError, match="/api/x"):
+            client._navigate_and_capture("u", "/api/x")
+
+    def test_raises_login_error_when_redirected_to_captcha(self, monkeypatch):
+        client = XhsClient({})
+        client._page = _FakeCapturePage(
+            "https://www.xiaohongshu.com/website-login/captcha?verifyUuid=abc",
+            raise_timeout=True,
+        )
+        _no_wait(client, monkeypatch)
+        with pytest.raises(LoginError, match="security verification"):
+            client._navigate_and_capture("u", "/api/x")
+
+
+class TestSearchAndFeedMapping:
+    def test_search_returns_api_items(self, monkeypatch):
+        client = XhsClient({})
+        envelope = {"data": {"items": [{"id": "n1"}, {"id": "n2"}], "has_more": True}}
+        monkeypatch.setattr(client, "_navigate_and_capture", lambda *a, **k: envelope)
+        assert client.search_notes("food") == [{"id": "n1"}, {"id": "n2"}]
+
+    def test_search_returns_empty_when_no_items(self, monkeypatch):
+        client = XhsClient({})
+        monkeypatch.setattr(client, "_navigate_and_capture", lambda *a, **k: {"data": {}})
+        assert client.search_notes("food") == []
+
+    def test_feed_returns_api_items(self, monkeypatch):
+        client = XhsClient({})
+        envelope = {"data": {"items": [{"id": "f1"}], "cursor_score": "x"}}
+        monkeypatch.setattr(client, "_navigate_and_capture", lambda *a, **k: envelope)
+        assert client.get_feed() == [{"id": "f1"}]
+
+
+class TestGetSelfInfo:
+    def test_wraps_user_me_as_basic_info(self, monkeypatch):
+        client = XhsClient({})
+        data = {"nickname": "Me", "user_id": "u1", "red_id": "r1"}
+        monkeypatch.setattr(
+            client, "_navigate_and_capture", lambda *a, **k: {"data": data}
+        )
+        assert client.get_self_info() == {"basicInfo": data}
+
+    def test_returns_empty_when_no_data(self, monkeypatch):
+        client = XhsClient({})
+        monkeypatch.setattr(client, "_navigate_and_capture", lambda *a, **k: {"data": {}})
+        assert client.get_self_info() == {}
+
+
 class TestGetNoteComments:
-    def test_extracts_note_comments_and_applies_max_limit(self):
+    def test_extracts_note_comments_and_applies_max_limit(self, monkeypatch):
         client = XhsClient({})
-        client._page = _FakePage(
-            "https://www.xiaohongshu.com/explore/note123",
-            {"comments": [{"id": "c1"}, {"id": "c2"}]},
-        )
+        envelope = {"data": {"comments": [{"id": "c1"}, {"id": "c2"}]}}
+        monkeypatch.setattr(client, "_navigate_and_capture", lambda *a, **k: envelope)
+        assert client.get_note_comments("note123", max_comments=1) == [{"id": "c1"}]
 
-        comments = client.get_note_comments("note123", max_comments=1)
-        assert comments == [{"id": "c1"}]
-
-    def test_navigates_to_target_note_when_page_mismatch(self, monkeypatch):
+    def test_returns_empty_when_capture_fails(self, monkeypatch):
         client = XhsClient({})
-        client._page = _FakePage(
-            "https://www.xiaohongshu.com/explore/other",
-            [{"id": "c1"}],
-        )
-        called = {"value": False}
 
-        def _fake_nav(note_id: str, xsec_token: str):
-            called["value"] = True
-            assert note_id == "note123"
-            assert xsec_token == "tok"
-            client._page.url = f"https://www.xiaohongshu.com/explore/{note_id}"
+        def _raise(*_a, **_k):
+            raise DataFetchError("blocked")
 
-        monkeypatch.setattr(client, "_navigate_to_note", _fake_nav)
-        comments = client.get_note_comments("note123", xsec_token="tok", max_comments=10)
-        assert called["value"]
-        assert comments == [{"id": "c1"}]
+        monkeypatch.setattr(client, "_navigate_and_capture", _raise)
+        assert client.get_note_comments("note123", xsec_token="tok") == []
 
 
 class TestPublishResultHeuristic:

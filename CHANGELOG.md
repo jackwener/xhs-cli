@@ -2,6 +2,40 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Fixed
+
+- **Read commands no longer depend on `window.__INITIAL_STATE__`**, which
+  Xiaohongshu's current web frontend no longer injects (it renders purely via
+  client-side XHR). `search`, `feed`, `whoami`, and `read` were timing out;
+  they now work again.
+
+### Changed
+
+- Added `XhsClient._navigate_and_capture()`, which navigates to a page and reads
+  the body of the SPA's own validly-signed XHR response via
+  `page.expect_response`, instead of forging API calls.
+- Migrated `search_notes` (`/api/sns/web/v1/search/notes`), `get_feed`
+  (`/api/sns/web/v1/homefeed`, scroll-triggered), `get_self_info`
+  (`/api/sns/web/v2/user/me`), and `get_note_comments`
+  (`/api/sns/web/v2/comment/page`) to this mechanism. `get_note_detail` scrapes
+  the rendered DOM, since direct note opens fire no detail XHR.
+
+### Known limitations
+
+- Profile-page commands (`user`, `user-posts`, `followers`, `following`,
+  `favorites`) still rely on `__INITIAL_STATE__`. Under headless automation all
+  `/user/profile/<id>` pages redirect to a risk-control captcha, so they cannot
+  be migrated with the same approach and remain non-functional for now.
+- `read` note-detail fields are best-effort DOM scrapes; engagement counts may
+  be approximate.
+
+### Validation
+
+- `pytest tests/test_client.py tests/test_cli.py tests/test_auth.py` → 82 passed.
+- Live-verified against a logged-in account: `search`, `feed`, `whoami`, `read`.
+
 ## v0.1.4 - 2026-03-11
 
 ### Changed

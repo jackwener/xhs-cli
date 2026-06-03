@@ -202,17 +202,17 @@ xhs --help
 ```
 CLI (click) → XhsClient (camoufox 浏览器)
                   ↓ 导航到真实页面
-              window.__INITIAL_STATE__ → 提取结构化数据
+              捕获页面自身的签名 XHR 响应 → 提取结构化数据
 ```
 
-使用 [camoufox](https://github.com/daijro/camoufox)（反指纹 Firefox）像真实用户一样浏览小红书。数据从页面的 `window.__INITIAL_STATE__` 中提取，与正常浏览完全一致。
+使用 [camoufox](https://github.com/daijro/camoufox)（反指纹 Firefox）像真实用户一样浏览小红书。读取类命令捕获页面自己发出的、已合法签名的 XHR 接口响应（而非伪造 API 请求），与正常浏览完全一致。
 
 ## 工作原理
 
 1. **认证** — 优先读取 `~/.xhs-cli/cookies.json`；未命中时通过 browser-cookie3 从本地 Chrome 提取 cookie。`xhs login --qrcode` 使用 browser-assisted 扫码登录，并在终端渲染二维码（`▀ ▄ █`）。
 2. **登录态校验** — 登录后会校验会话是否为有效非 guest 会话，并做 feed/search 可用性探活；探活失败会提示重新登录。
 3. **浏览** — 使用 camoufox 导航到真实页面，所有流量与正常用户浏览一致。
-4. **数据提取** — 从 `window.__INITIAL_STATE__` 提取结构化数据。
+4. **数据提取** — 捕获页面自身发出的、已合法签名的 XHR 接口响应（`search/notes`、`homefeed`、`user/me`、`comment/page` 等）；笔记正文等无对应接口的内容回退到读取已渲染 DOM。
 5. **Token 缓存** — 搜索/Feed 后 `xsec_token` 自动缓存到 `~/.xhs-cli/token_cache.json`。
 6. **互动操作** — 点赞、收藏、评论通过点击真实 DOM 按钮实现。
 

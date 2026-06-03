@@ -201,17 +201,17 @@ xhs --help
 ```
 CLI (click) → XhsClient (camoufox browser)
                   ↓ navigate to real pages
-              window.__INITIAL_STATE__ → extract structured data
+              capture the page's own signed XHR responses → extract data
 ```
 
-Uses [camoufox](https://github.com/daijro/camoufox) (anti-fingerprint Firefox) to browse Xiaohongshu like a real user. Data is extracted from `window.__INITIAL_STATE__` — completely indistinguishable from normal browsing.
+Uses [camoufox](https://github.com/daijro/camoufox) (anti-fingerprint Firefox) to browse Xiaohongshu like a real user. Read commands capture the page's own validly-signed XHR responses (rather than forging API calls) — completely indistinguishable from normal browsing.
 
 ## How It Works
 
 1. **Authentication** — First reads `~/.xhs-cli/cookies.json`; if missing, extracts cookies from local Chrome via browser-cookie3. `xhs login --qrcode` uses browser-assisted QR login with terminal half-block rendering (`▀ ▄ █`).
 2. **Session Validation** — After login, the CLI verifies that the session is non-guest and probes feed/search usability. If probe fails, it asks for re-login.
 3. **Browsing** — Each operation navigates to real pages using camoufox, making all traffic look like normal user browsing.
-4. **Data Extraction** — Structured data is pulled from `window.__INITIAL_STATE__`.
+4. **Data Extraction** — Captures the page's own validly-signed XHR responses (`search/notes`, `homefeed`, `user/me`, `comment/page`, …); note body and other content without a backing endpoint falls back to reading the rendered DOM.
 5. **Token Caching** — After search/feed, `xsec_token` is auto-cached to `~/.xhs-cli/token_cache.json`.
 6. **Interactions** — Like, favorite, and comment work by clicking actual DOM buttons.
 

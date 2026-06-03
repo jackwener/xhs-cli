@@ -1,7 +1,10 @@
 """Xiaohongshu browser-based client using camoufox.
 
-All operations navigate to pages and extract data from window.__INITIAL_STATE__,
-exactly like a real user browsing. This avoids API-level risk control (300011).
+Operations navigate to real pages in a stealth browser, exactly like a user
+browsing. Read commands capture the page's own validly-signed XHR responses
+(see ``_navigate_and_capture``) instead of forging API calls, which avoids
+API-level risk control (300011). A few legacy paths still read the now-removed
+window.__INITIAL_STATE__ and are pending migration.
 """
 
 from __future__ import annotations
@@ -10,6 +13,8 @@ import logging
 import random
 import re
 import time
+
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from .exceptions import DataFetchError, LoginError
 
@@ -161,60 +166,76 @@ class XhsClient:
     def search_notes(self, keyword: str) -> list[dict]:
         """Search notes by keyword.
 
-        Navigates to search_result page and extracts from __INITIAL_STATE__.search.feeds.
+        Navigates to the search_result page and captures the SPA's own signed
+        /api/sns/web/v1/search/notes XHR response.
         """
         import urllib.parse
         params = urllib.parse.urlencode({"keyword": keyword, "source": "web_explore_feed"})
         url = f"https://www.xiaohongshu.com/search_result?{params}"
 
         logger.info("Searching: %s", keyword)
-        self._goto(
+        envelope = self._navigate_and_capture(
             url,
-            timeout=20000,
-            wait_min=1,
-            wait_max=2,
+            "/api/sns/web/v1/search/notes",
+            method="POST",
             context="loading search page",
+            timeout=20000,
         )
 
-        # Wait for search.feeds to be populated by Vue
-        self._wait_for_data(
-            """() => {
-                const s = window.__INITIAL_STATE__;
-                if (!s || !s.search) return false;
-                const f = s.search.feeds;
-                if (!f) return false;
-                const d = f._rawValue || f._value || f.value || f;
-                return Array.isArray(d) || (d && typeof d === 'object');
-            }""",
-            timeout=15.0,
-            desc="search.feeds",
-            raise_on_timeout=True,
-        )
-
-        # Extract search feeds
-        result = self._page.evaluate(
-            """() => {
-"""
-            + UNWRAP_JS
-            + """
-            const s = window.__INITIAL_STATE__;
-            if (!s || !s.search || !s.search.feeds) return null;
-            return unwrap(s.search.feeds, 0);
-        }"""
-        )
-
-        if not result:
-            logger.warning("No search results found in __INITIAL_STATE__")
+        items = (envelope or {}).get("data", {}).get("items")
+        if not items:
+            logger.warning("No search results in API response")
             return []
-
-        return result if isinstance(result, list) else []
+        return [it for it in items if isinstance(it, dict)]
 
     # ===== Note Detail =====
 
-    def get_note_detail(self, note_id: str, xsec_token: str = "") -> dict:
-        """Get note detail by navigating to the explore page.
+    # JS that scrapes the rendered note page. Modern Xiaohongshu no longer
+    # exposes __INITIAL_STATE__ for note detail and fires no dedicated detail
+    # XHR on direct open, so we read the DOM the SPA renders.
+    _NOTE_DETAIL_JS = """() => {
+        const txt = (sels) => {
+            for (const s of sels) {
+                const e = document.querySelector(s);
+                if (e && e.innerText && e.innerText.trim()) return e.innerText.trim();
+            }
+            return "";
+        };
+        const num = (sels) => {
+            const v = txt(sels);
+            return v || "0";
+        };
+        const title = txt(["#detail-title", ".note-content .title"]);
+        const desc = txt(["#detail-desc", ".note-content .desc", ".note-text"]);
+        const nickname = txt([".author-container .username",
+                              ".author-wrapper .username", ".info .name", ".username"]);
+        const ip = txt([".bottom-container .date span", ".bottom-container .date",
+                        ".note-content .date"]);
+        const imgs = Array.from(
+            document.querySelectorAll(".swiper-slide img, .note-slider-img, "
+                + ".media-container img")
+        ).map((e) => e.src).filter(Boolean);
+        return {
+            title: title,
+            desc: desc,
+            user: {nickname: nickname},
+            ip_location: ip,
+            image_list: imgs,
+            interact_info: {
+                liked_count: num([".like-wrapper .count", ".like-active ~ .count"]),
+                collected_count: num([".collect-wrapper .count"]),
+                comment_count: num([".chat-wrapper .count"]),
+                share_count: num([".share-wrapper .count"]),
+            },
+        };
+    }"""
 
-        Extracts from __INITIAL_STATE__.note.noteDetailMap.
+    def get_note_detail(self, note_id: str, xsec_token: str = "") -> dict:
+        """Get note detail by scraping the rendered note page DOM.
+
+        Best-effort: current Xiaohongshu embeds note content in the DOM rather
+        than exposing it via __INITIAL_STATE__ or a dedicated XHR, so some
+        fields may be empty if the page renders inconsistently under headless.
         """
         url = f"https://www.xiaohongshu.com/explore/{note_id}"
         if xsec_token:
@@ -229,42 +250,16 @@ class XhsClient:
             context=f"loading note {note_id}",
         )
 
-        self._wait_for_data(
-            """() => {
-                const s = window.__INITIAL_STATE__;
-                return s && s.note && s.note.noteDetailMap
-                    && Object.keys(s.note.noteDetailMap).length > 0;
-            }""",
-            timeout=15.0,
-            desc="note.noteDetailMap",
-            raise_on_timeout=True,
+        for _attempt in range(8):
+            result = self._page.evaluate(self._NOTE_DETAIL_JS)
+            if result and (result.get("desc") or result.get("title")):
+                return result
+            self._raise_if_blocked(f"loading note {note_id}", include_body=False)
+            time.sleep(1.0)
+
+        raise DataFetchError(
+            f"Failed to extract note detail for {note_id} (page did not render)"
         )
-
-        # Extract note detail
-        for _attempt in range(3):
-            result = self._page.evaluate("""() => {
-                if (window.__INITIAL_STATE__ &&
-                    window.__INITIAL_STATE__.note &&
-                    window.__INITIAL_STATE__.note.noteDetailMap) {
-                    return JSON.parse(JSON.stringify(
-                        window.__INITIAL_STATE__.note.noteDetailMap
-                    ));
-                }
-                return null;
-            }""")
-
-            if result:
-                # Find the note in the map
-                if note_id in result:
-                    return result[note_id]
-                # Try first key if note_id not found
-                if result:
-                    first_key = next(iter(result))
-                    return result[first_key]
-
-            time.sleep(0.5)
-
-        raise DataFetchError(f"Failed to extract note detail for {note_id}")
 
     # ===== User Profile =====
 
@@ -462,66 +457,22 @@ class XhsClient:
         from __INITIAL_STATE__.feed.
         """
         logger.info("Loading explore feed...")
-        self._goto(
+        envelope = self._navigate_and_capture(
             "https://www.xiaohongshu.com/explore",
-            timeout=20000,
+            "/api/sns/web/v1/homefeed",
+            method="POST",
+            context="loading explore feed",
+            timeout=25000,
             wait_min=2,
             wait_max=4,
-            context="loading explore feed",
-        )
-        self._wait_for_data(
-            """() => {
-                const s = window.__INITIAL_STATE__;
-                if (!s) return false;
-                const f = (s.feed && s.feed.feeds) ||
-                          (s.explore && s.explore.feeds) ||
-                          (s.homefeed && s.homefeed.feeds);
-                if (!f) return false;
-                const d = f._rawValue || f._value || f.value || f;
-                return Array.isArray(d) || (d && typeof d === 'object');
-            }""",
-            timeout=15.0,
-            desc="feed.feeds",
-            raise_on_timeout=True,
-        )
-        # Extract feed from explore page state
-        result = self._page.evaluate(
-            """() => {
-"""
-            + UNWRAP_JS
-            + """
-            const state = window.__INITIAL_STATE__;
-            if (!state) return null;
-
-            // Try multiple paths where feed data might live
-            // Path 1: state.feed.feeds (explore page)
-            if (state.feed && state.feed.feeds) {
-                return unwrap(state.feed.feeds, 0);
-            }
-            // Path 2: state.explore.feeds
-            if (state.explore && state.explore.feeds) {
-                return unwrap(state.explore.feeds, 0);
-            }
-            // Path 3: state.homefeed
-            if (state.homefeed && state.homefeed.feeds) {
-                return unwrap(state.homefeed.feeds, 0);
-            }
-            return null;
-        }"""
+            scroll=True,
         )
 
-        if not result:
-            logger.warning("No feed data found in __INITIAL_STATE__")
+        items = (envelope or {}).get("data", {}).get("items")
+        if not items:
+            logger.warning("No feed items in API response")
             return []
-
-        # result could be an array or an object wrapping an array
-        if isinstance(result, list):
-            return result
-        if isinstance(result, dict):
-            for key in ("value", "_value", "data", "list"):
-                if key in result and isinstance(result[key], list):
-                    return result[key]
-        return []
+        return [it for it in items if isinstance(it, dict)]
 
     # ===== Topics / Hashtags =====
 
@@ -726,99 +677,26 @@ class XhsClient:
     def get_self_info(self) -> dict:
         """Get current user's profile info.
 
-        Strategy:
-        1. Navigate to homepage and extract user_id from __INITIAL_STATE__
-           (checks multiple paths: user.currentUser, sidebar, etc.)
-        2. If user_id found, navigate to profile page for full info
-        3. Falls back to whatever data is available from homepage
+        Captures the SPA's own /api/sns/web/v2/user/me XHR response from the
+        homepage. The /user/profile/me page itself triggers risk-control
+        captcha under headless automation, so we deliberately avoid it; the
+        homepage endpoint returns nickname / user_id / red_id / desc / gender.
         """
-        self._goto(
+        envelope = self._navigate_and_capture(
             "https://www.xiaohongshu.com",
-            timeout=15000,
-            wait_min=1,
-            wait_max=2,
+            "/api/sns/web/v2/user/me",
+            method="GET",
             context="loading homepage for self info",
-        )
-        self._wait_for_data(
-            """() => {
-                const s = window.__INITIAL_STATE__;
-                if (!s) return false;
-                if (s.user && s.user.userPageData) return true;
-                if (s.user && s.user.currentUser) return true;
-                if (s.user && s.user.userInfo) return true;
-                if (s.sidebar && s.sidebar.user) return true;
-                return false;
-            }""",
-            timeout=10.0,
-            desc="user info",
-            raise_on_timeout=True,
+            timeout=15000,
         )
 
-        # Try to extract current user info from homepage state.
-        # The data might be in different paths depending on page version.
-        result = self._page.evaluate(
-            """() => {
-"""
-            + UNWRAP_JS
-            + """
-            const state = window.__INITIAL_STATE__;
-            if (!state) return null;
-
-            // Try multiple paths where current user info might live
-            const paths = [
-                state.user && state.user.userPageData,
-                state.user && state.user.currentUser,
-                state.user && state.user.info,
-                state.user && state.user.loginUser,
-                state.sidebar && state.sidebar.user,
-                state.app && state.app.user,
-            ];
-
-            for (const p of paths) {
-                if (p) {
-                    const data = unwrap(p, 0);
-                    if (data && typeof data === 'object' && Object.keys(data).length > 0) {
-                        return data;
-                    }
-                }
-            }
-
-            // Last resort: dump the entire user object for inspection
-            if (state.user) {
-                return unwrap(state.user, 0);
-            }
-            return null;
-        }"""
-        )
-
-        if not result:
+        data = (envelope or {}).get("data")
+        if not isinstance(data, dict) or not data:
             return {}
 
-        # Try to find user_id so we can navigate to profile for full info.
-        user_id = None
-        if isinstance(result, dict):
-            # Check multiple paths where userId might live
-            for sub_key in ["userInfo", "basicInfo", "basic_info"]:
-                sub = result.get(sub_key, {})
-                if isinstance(sub, dict):
-                    uid = sub.get("userId", "") or sub.get("user_id", "")
-                    if uid:
-                        user_id = uid
-                        break
-            if not user_id:
-                user_id = (result.get("userId", "") or result.get("user_id", "") or
-                           result.get("id", ""))
-
-        # If we got a user_id, fetch their full profile page for richer data
-        if user_id:
-            try:
-                full_info = self.get_user_info(user_id)
-                if full_info and isinstance(full_info, dict):
-                    return full_info
-            except Exception:
-                pass
-
-        return result
+        # /api/sns/web/v2/user/me is flat (nickname, user_id, red_id, desc,
+        # gender). Wrap it as basicInfo so the CLI's snake_case fallbacks apply.
+        return {"basicInfo": dict(data)}
 
     # ===== Comments via scroll =====
 
@@ -828,41 +706,31 @@ class XhsClient:
 
         Must be called after get_note_detail on the same note.
         """
-        # Ensure we are on the expected note page before extracting comments.
-        expected_path = f"/explore/{note_id}"
-        if expected_path not in self._page.url:
-            self._navigate_to_note(note_id, xsec_token)
+        # Navigate to the note page and capture its first signed
+        # /api/sns/web/v2/comment/page XHR response.
+        url = f"https://www.xiaohongshu.com/explore/{note_id}"
+        if xsec_token:
+            url += f"?xsec_token={xsec_token}&xsec_source=pc_feed"
 
-        # First get initial comments from __INITIAL_STATE__
-        comments_data = self._page.evaluate("""(noteId) => {
-            if (window.__INITIAL_STATE__ &&
-                window.__INITIAL_STATE__.note &&
-                window.__INITIAL_STATE__.note.noteDetailMap) {
-                const map = window.__INITIAL_STATE__.note.noteDetailMap;
-                const detail = map[noteId] || map[Object.keys(map)[0]];
-                if (detail) {
-                    const comments = detail.comments;
-                    if (comments !== undefined && comments !== null) {
-                        return JSON.parse(JSON.stringify(comments));
-                    }
-                }
-            }
-            return null;
-        }""", note_id)
-
-        if not comments_data:
+        try:
+            envelope = self._navigate_and_capture(
+                url,
+                "/api/sns/web/v2/comment/page",
+                method="GET",
+                context=f"loading comments for {note_id}",
+                timeout=20000,
+                wait_min=1.5,
+                wait_max=3,
+            )
+        except DataFetchError:
             return []
-        if isinstance(comments_data, dict):
-            for key in ("comments", "list", "data", "items"):
-                value = comments_data.get(key)
-                if isinstance(value, list):
-                    comments_data = value
-                    break
-        if not isinstance(comments_data, list):
+
+        comments = (envelope or {}).get("data", {}).get("comments")
+        if not isinstance(comments, list):
             return []
         if max_comments <= 0:
-            return comments_data
-        return comments_data[:max_comments]
+            return comments
+        return comments[:max_comments]
 
     # ===== Like / Unlike =====
 
@@ -1442,6 +1310,54 @@ class XhsClient:
         self._page.goto(url, wait_until=wait_until, timeout=timeout)
         self._human_wait(wait_min, wait_max)
         self._raise_if_blocked(context, include_body=True)
+
+    def _navigate_and_capture(
+        self,
+        url: str,
+        api_needle: str,
+        *,
+        method: str = None,
+        context: str = "loading page",
+        timeout: int = 20000,
+        wait_min: float = 1.0,
+        wait_max: float = 2.0,
+        scroll: bool = False,
+    ) -> dict:
+        """Navigate and capture the JSON body of the SPA's own API request.
+
+        Modern Xiaohongshu no longer exposes window.__INITIAL_STATE__; data is
+        fetched client-side via signed XHR calls. We let the page issue its own
+        (validly signed) request and read the response, rather than forging one.
+
+        Some pages (the explore feed) lazy-load their data on scroll, so
+        ``scroll=True`` nudges the page until the target request fires.
+        """
+        try:
+            with self._page.expect_response(
+                lambda r: api_needle in r.url
+                and (method is None or r.request.method == method),
+                timeout=timeout,
+            ) as resp_info:
+                self._page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+                self._human_wait(wait_min, wait_max)
+                if scroll:
+                    for _ in range(4):
+                        self._page.mouse.wheel(0, 3000)
+                        self._human_wait(1.0, 1.8)
+            resp = resp_info.value
+        except PlaywrightTimeoutError:
+            self._raise_if_blocked(context, include_body=True)
+            raise DataFetchError(
+                f"API response for {api_needle} not received within "
+                f"{timeout / 1000:.1f}s while {context}"
+            )
+        self._raise_if_blocked(context, include_body=False)
+        try:
+            return resp.json()
+        except Exception:
+            raise DataFetchError(
+                f"Failed to parse JSON from {api_needle} while {context}"
+            )
 
     def _detect_block_reason(self, include_body: bool = False) -> str:
         """Detect whether current page is a security verification/risk-control page."""
