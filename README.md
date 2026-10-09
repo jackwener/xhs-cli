@@ -41,6 +41,20 @@
 
 > 所有数据命令支持 `--json` 输出。`xsec_token` 自动缓存，无需手动传递。
 
+## 特别鸣谢
+
+<p align="center">
+  <a href="https://www.ipwo.net/">
+    <img src="assets/ipwo-banner.jpg" alt="IPWO 住宅代理" width="100%" />
+  </a>
+</p>
+
+[<ins>IPWO住宅代理</ins>](https://www.ipwo.net/)覆盖 195+ 个国家和地区，提供动态住宅代理、静态住宅代理及不限量住宅代理。<br>
+适用于开发 CLI 工具、集成 MCP 服务，构建 AI Agent 与自动化工作流，为多地区网络访问和数据采集任务提供灵活的住宅代理选择。<br>
+支持免费测试，9 折折扣码：`0203`
+
+---
+
 ## 安装
 
 需要 Python 3.8+。
