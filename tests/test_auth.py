@@ -181,6 +181,15 @@ class TestTokenCache:
         mode = stat.S_IMODE(os.stat(token_file).st_mode)
         assert mode == 0o600
 
+    def test_load_non_dict_cache(self, tmp_config_dir):
+        (tmp_config_dir / "token_cache.json").write_text('["note1"]')
+        assert load_xsec_token("note1") == ""
+
+    def test_save_over_non_dict_cache(self, tmp_config_dir):
+        (tmp_config_dir / "token_cache.json").write_text('["note1"]')
+        save_token_cache({"note1": "token_a"})
+        assert load_xsec_token("note1") == "token_a"
+
 
 class TestQrHalfBlockRender:
     def test_empty_matrix(self):
