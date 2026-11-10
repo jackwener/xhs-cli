@@ -452,7 +452,9 @@ def save_token_cache(token_map: dict[str, str]):
     existing = {}
     if TOKEN_CACHE_FILE.exists():
         try:
-            existing = json.loads(TOKEN_CACHE_FILE.read_text())
+            loaded = json.loads(TOKEN_CACHE_FILE.read_text())
+            if isinstance(loaded, dict):
+                existing = loaded
         except (OSError, json.JSONDecodeError):
             pass
 
@@ -475,6 +477,8 @@ def load_xsec_token(note_id: str) -> str:
 
     try:
         cache = json.loads(TOKEN_CACHE_FILE.read_text())
+        if not isinstance(cache, dict):
+            return ""
         token = cache.get(note_id, "")
         if token:
             logger.info("Auto-resolved xsec_token for %s from cache", note_id)
